@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::json;
@@ -20,10 +21,44 @@ use manifests::{discover_packages, ManifestSummary};
 use model::{evidence, CapabilityReport, FileRecord, Graph, NodeDraft};
 use syntax::{analyze_syntax, SyntaxSummary};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum HistoryPolicy {
+    /// Do not traverse or materialize Git history.
+    #[default]
+    Off,
+    /// Detect full/shallow history and preserve the original history graph behavior.
+    Auto,
+}
+
+impl HistoryPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+        }
+    }
+
+    fn collects_history(self) -> bool {
+        self == Self::Auto
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     pub repo: PathBuf,
     pub database: PathBuf,
+    pub history: HistoryPolicy,
+}
+
+impl ScanOptions {
+    /// Create scan options using the current-product default: history disabled.
+    pub fn new(repo: impl Into<PathBuf>, database: impl Into<PathBuf>) -> Self {
+        Self {
+            repo: repo.into(),
+            database: database.into(),
+            history: HistoryPolicy::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,18 +87,23 @@ struct HistorySummary {
 }
 
 pub fn scan(options: &ScanOptions) -> Result<ScanReport> {
-    let repository = inspect_repository(&options.repo)?;
+    let repository = inspect_repository(&options.repo, options.history.collects_history())?;
     let paths = tracked_paths(&repository.root)?;
     let files = read_tracked_files(&repository.root, &paths)?;
-    let content_hash = content_hash(&repository.revision, &files);
+    let content_hash = content_hash(&repository.revision, &files, options.history);
 
     let mut graph = Graph::new();
     add_filesystem_graph(&repository, &files, &mut graph)?;
     let manifests = discover_packages(&files, &mut graph)?;
     let syntax = analyze_syntax(&files, &manifests.packages, &mut graph)?;
-    let history = add_history_graph(&repository, &mut graph)?;
+    let history = if options.history.collects_history() {
+        add_history_graph(&repository, &mut graph)?
+    } else {
+        HistorySummary::default()
+    };
     set_capabilities(
         &repository,
+        options.history,
         &files,
         &manifests,
         &syntax,
@@ -76,7 +116,10 @@ pub fn scan(options: &ScanOptions) -> Result<ScanReport> {
         "tracked_file_count": files.len(),
         "manifest_errors": manifests.errors,
         "syntax_extractor": "conservative-file-imports-v1",
+        "history_policy": options.history.as_str(),
     });
+    let history_mode = effective_history_mode(&repository, options.history);
+    let visible_commit_count = repository.commits.len();
     let persisted = persist_snapshot(
         &options.database,
         &SnapshotInput {
@@ -84,6 +127,8 @@ pub fn scan(options: &ScanOptions) -> Result<ScanReport> {
             content_hash: &content_hash,
             tracked_file_count: files.len(),
             commit_issue_reference_count: history.issue_references,
+            history_mode,
+            visible_commit_count,
             snapshot_attributes,
         },
         &graph,
@@ -101,8 +146,8 @@ pub fn scan(options: &ScanOptions) -> Result<ScanReport> {
         revision: repository.revision.clone(),
         content_hash,
         status: "complete".to_owned(),
-        history_mode: repository.history_mode().to_owned(),
-        visible_commit_count: repository.commits.len(),
+        history_mode: history_mode.to_owned(),
+        visible_commit_count,
         tracked_file_count: files.len(),
         node_count: persisted.node_count,
         edge_count: persisted.edge_count,
@@ -373,6 +418,7 @@ fn add_history_graph(repository: &RepositoryInfo, graph: &mut Graph) -> Result<H
 
 fn set_capabilities(
     repository: &RepositoryInfo,
+    history_policy: HistoryPolicy,
     files: &[FileRecord],
     manifests: &ManifestSummary,
     syntax: &SyntaxSummary,
@@ -462,6 +508,22 @@ fn set_capabilities(
         "File-backed mod declarations, crate-relative uses, and manifest dependency crates; macro-expanded and symbol-level uses require a future SCIP adapter.",
     );
 
+    if history_policy == HistoryPolicy::Off {
+        graph.set_capability(
+            "git_history",
+            "unavailable",
+            None,
+            "Git history collection was intentionally disabled by --history off.",
+        );
+        graph.set_capability(
+            "issue_file_touches",
+            "unavailable",
+            None,
+            "Issue-to-file touch collection was intentionally disabled by --history off.",
+        );
+        return;
+    }
+
     graph.set_capability(
         "git_history",
         if repository.shallow { "degraded" } else { "available" },
@@ -546,11 +608,26 @@ fn set_language_capability(
     }
 }
 
-fn content_hash(revision: &str, files: &[FileRecord]) -> String {
+fn effective_history_mode(
+    repository: &RepositoryInfo,
+    history_policy: HistoryPolicy,
+) -> &'static str {
+    match history_policy {
+        HistoryPolicy::Off => "absent",
+        HistoryPolicy::Auto => repository.history_mode(),
+    }
+}
+
+fn content_hash(revision: &str, files: &[FileRecord], history_policy: HistoryPolicy) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"CodebaseConstellation/content/v1\0");
     hasher.update(revision.as_bytes());
     hasher.update([0]);
+    // Preserve the original auto-mode content identity. The off marker prevents an
+    // absent-history graph from colliding with an auto graph for the same checkout.
+    if history_policy == HistoryPolicy::Off {
+        hasher.update(b"history-policy:off\0");
+    }
     for file in files {
         hasher.update((file.path.len() as u64).to_le_bytes());
         hasher.update(file.path.as_bytes());
@@ -608,7 +685,7 @@ fn tracker_display(tracker: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_hash, physical_line_count};
+    use super::{content_hash, physical_line_count, HistoryPolicy, ScanOptions};
     use crate::model::FileRecord;
 
     #[test]
@@ -626,7 +703,16 @@ mod tests {
             language: Some("rust".to_owned()),
             loc: Some(1),
         }];
-        assert_eq!(content_hash("abc", &files), content_hash("abc", &files));
-        assert_ne!(content_hash("abc", &files), content_hash("def", &files));
+        let auto = content_hash("abc", &files, HistoryPolicy::Auto);
+        assert_eq!(auto, content_hash("abc", &files, HistoryPolicy::Auto));
+        assert_ne!(auto, content_hash("def", &files, HistoryPolicy::Auto));
+        assert_ne!(auto, content_hash("abc", &files, HistoryPolicy::Off));
+    }
+
+    #[test]
+    fn library_options_default_to_history_off() {
+        let options = ScanOptions::new("repository", "constellation.sqlite");
+        assert_eq!(options.history, HistoryPolicy::Off);
+        assert_eq!(HistoryPolicy::Auto.as_str(), "auto");
     }
 }

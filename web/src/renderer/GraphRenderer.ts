@@ -28,16 +28,18 @@ const NODE_VERTEX_SHADER = `
   attribute float aShape;
   attribute float aAlpha;
   attribute float aState;
+  attribute float aDiagnostic;
   uniform float uPointScale;
   varying vec3 vColor;
   varying float vShape;
   varying float vAlpha;
   varying float vState;
+  varying float vDiagnostic;
 
   void main() {
     vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
-    float emphasis = aState > 2.5 ? 1.65 : (aState > 1.5 ? 1.28 : 1.0);
-    float minimumSize = aState > 2.5 ? 11.0 : (aState > 1.5 ? 5.0 : 3.0);
+    float emphasis = aState > 2.5 ? 1.65 : (aState > 1.5 ? 1.28 : (aDiagnostic > 0.5 ? 1.38 : 1.0));
+    float minimumSize = aState > 2.5 ? 11.0 : (aState > 1.5 ? 7.0 : (aDiagnostic > 0.5 ? 8.0 : 3.0));
     gl_PointSize = aAlpha <= 0.0
       ? 0.0
       : clamp(aRadius * uPointScale * emphasis / max(0.1, -viewPosition.z), minimumSize, 46.0);
@@ -46,6 +48,7 @@ const NODE_VERTEX_SHADER = `
     vShape = aShape;
     vAlpha = aAlpha;
     vState = aState;
+    vDiagnostic = aDiagnostic;
   }
 `;
 
@@ -96,15 +99,37 @@ const NODE_FRAGMENT_SHADER = `
   varying float vShape;
   varying float vAlpha;
   varying float vState;
+  varying float vDiagnostic;
   ${SHAPE_GLSL}
 
   void main() {
     vec2 point = gl_PointCoord * 2.0 - 1.0;
-    float mask = shapeMask(vShape, point);
+    float bodyMask = shapeMask(vShape, vDiagnostic > 0.5 ? point * 1.18 : point);
+    float diagnosticMask = 0.0;
+    vec3 diagnosticColor = vec3(1.0);
+    if (vDiagnostic > 0.5 && vDiagnostic < 1.5) {
+      float radius = length(point);
+      diagnosticMask = smoothstep(0.60, 0.70, radius) * (1.0 - smoothstep(0.86, 0.96, radius));
+      diagnosticColor = vec3(1.0, 0.35, 0.58);
+    } else if (vDiagnostic >= 1.5 && vDiagnostic < 2.5) {
+      float cross = max(
+        1.0 - smoothstep(0.10, 0.19, abs(point.x)),
+        1.0 - smoothstep(0.10, 0.19, abs(point.y))
+      );
+      diagnosticMask = cross * (1.0 - smoothstep(0.78, 0.96, length(point)));
+      diagnosticColor = vec3(0.26, 0.83, 0.95);
+    } else if (vDiagnostic >= 2.5) {
+      float diamond = abs(point.x) + abs(point.y);
+      diagnosticMask = smoothstep(0.69, 0.79, diamond) * (1.0 - smoothstep(0.94, 1.06, diamond));
+      diagnosticColor = vec3(1.0, 0.72, 0.28);
+    }
+    float mask = max(bodyMask, diagnosticMask);
     if (mask < 0.02 || vAlpha <= 0.0) discard;
     float dimming = vState < 0.8 ? max(0.25, vState) : 1.0;
     float energy = vState > 2.5 ? 2.5 : (vState > 1.5 ? 1.55 : 1.0);
-    vec3 color = mix(vColor, vec3(1.0), vState > 2.5 ? 0.38 : 0.0);
+    float diagnosticMix = vDiagnostic > 0.5 ? (diagnosticMask > bodyMask ? 0.98 : 0.72) : 0.0;
+    vec3 participantColor = mix(vColor, diagnosticColor, diagnosticMix);
+    vec3 color = mix(participantColor, vec3(1.0), vState > 2.5 ? 0.38 : 0.0);
     gl_FragColor = vec4(color * energy, mask * vAlpha * dimming);
   }
 `;
@@ -332,6 +357,7 @@ export class GraphRenderer {
     const pickColors = new Float32Array(nodeCount * 3);
     const alpha = new Float32Array(nodeCount);
     const state = new Float32Array(nodeCount);
+    const diagnostic = new Float32Array(nodeCount);
     const kindByCode = new Map(this.#dataset.nodeKinds.map((kind) => [kind.renderCode, kind.key]));
     const color = new THREE.Color();
 
@@ -358,6 +384,7 @@ export class GraphRenderer {
     geometry.setAttribute("aPickColor", new THREE.BufferAttribute(pickColors, 3));
     geometry.setAttribute("aAlpha", new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage));
     geometry.setAttribute("aState", new THREE.BufferAttribute(state, 1).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute("aDiagnostic", new THREE.BufferAttribute(diagnostic, 1).setUsage(THREE.DynamicDrawUsage));
     geometry.computeBoundingSphere();
     return geometry;
   }
@@ -407,10 +434,13 @@ export class GraphRenderer {
     this.#renderState = renderState;
     const nodeAlpha = this.#nodeGeometry.getAttribute("aAlpha") as THREE.BufferAttribute;
     const nodeState = this.#nodeGeometry.getAttribute("aState") as THREE.BufferAttribute;
+    const nodeDiagnostic = this.#nodeGeometry.getAttribute("aDiagnostic") as THREE.BufferAttribute;
     (nodeAlpha.array as Float32Array).set(renderState.nodeAlpha);
     (nodeState.array as Float32Array).set(renderState.nodeState);
+    (nodeDiagnostic.array as Float32Array).set(renderState.nodeDiagnostic);
     nodeAlpha.needsUpdate = true;
     nodeState.needsUpdate = true;
+    nodeDiagnostic.needsUpdate = true;
 
     const edgeAlpha = this.#edgeGeometry.getAttribute("aAlpha") as THREE.BufferAttribute;
     const edgeArray = edgeAlpha.array as Float32Array;

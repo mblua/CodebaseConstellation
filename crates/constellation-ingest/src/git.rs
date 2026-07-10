@@ -40,7 +40,7 @@ impl RepositoryInfo {
     }
 }
 
-pub(crate) fn inspect_repository(path: &Path) -> Result<RepositoryInfo> {
+pub(crate) fn inspect_repository(path: &Path, collect_history: bool) -> Result<RepositoryInfo> {
     let root = fs::canonicalize(path)
         .with_context(|| format!("cannot resolve repository path {}", path.display()))?;
     if !root.is_dir() {
@@ -63,7 +63,11 @@ pub(crate) fn inspect_repository(path: &Path) -> Result<RepositoryInfo> {
     }
 
     let revision = git_text(&root, ["rev-parse", "HEAD"])?.trim().to_owned();
-    let shallow = git_text(&root, ["rev-parse", "--is-shallow-repository"])?.trim() == "true";
+    let shallow = if collect_history {
+        git_text(&root, ["rev-parse", "--is-shallow-repository"])?.trim() == "true"
+    } else {
+        false
+    };
     let dirty = !git_bytes(
         &root,
         ["status", "--porcelain=v1", "--untracked-files=no", "-z"],
@@ -92,7 +96,12 @@ pub(crate) fn inspect_repository(path: &Path) -> Result<RepositoryInfo> {
     if slug.is_empty() {
         bail!("repository name {name:?} cannot form a stable-key slug");
     }
-    let commits = read_commits(&root)?;
+    // History-off scans stop here: no rev-list, show, or diff-tree traversal.
+    let commits = if collect_history {
+        read_commits(&root)?
+    } else {
+        Vec::new()
+    };
 
     Ok(RepositoryInfo {
         root,

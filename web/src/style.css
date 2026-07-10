@@ -462,6 +462,64 @@ kbd {
   font-size: 9px;
 }
 
+.investigation-section {
+  background: linear-gradient(135deg, rgba(255, 53, 106, 0.055), rgba(99, 214, 227, 0.025));
+}
+
+.preset-button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 31px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid rgba(255, 91, 132, 0.22);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.022);
+  cursor: pointer;
+  text-align: left;
+}
+
+.preset-button:hover,
+.preset-button.active {
+  border-color: rgba(255, 91, 132, 0.52);
+  background: linear-gradient(135deg, rgba(255, 53, 106, 0.13), rgba(99, 214, 227, 0.07));
+}
+
+.preset-button.active {
+  box-shadow: inset 0 0 18px rgba(255, 53, 106, 0.05), 0 0 15px rgba(255, 53, 106, 0.055);
+}
+
+.preset-mark {
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border: 1px solid rgba(255, 91, 132, 0.36);
+  border-radius: 50%;
+  color: #ff769c;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.preset-copy strong,
+.preset-copy small {
+  display: block;
+}
+
+.preset-copy strong { font-size: 11px; font-weight: 650; }
+.preset-copy small { margin-top: 3px; color: var(--muted); font-size: 7px; }
+.preset-state {
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.preset-button.active .preset-state { border-color: rgba(255, 91, 132, 0.4); color: #ff9db7; }
+
 .layer-controls {
   display: grid;
   gap: 6px;
@@ -485,6 +543,11 @@ kbd {
 .layer-button:hover {
   background: rgba(255, 255, 255, 0.035);
   border-color: var(--line);
+}
+
+.layer-button:disabled {
+  opacity: 0.44;
+  cursor: not-allowed;
 }
 
 .layer-button[aria-pressed="true"] {
@@ -749,6 +812,43 @@ kbd {
   pointer-events: auto;
 }
 
+.finding-isolation {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  z-index: 9;
+  width: min(440px, calc(100% - 36px));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid rgba(255, 91, 132, 0.42);
+  border-radius: 9px;
+  background: rgba(21, 15, 25, 0.9);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+}
+
+.finding-isolation[hidden] { display: none; }
+.finding-isolation span { min-width: 0; }
+.finding-isolation strong,
+.finding-isolation small { display: block; }
+.finding-isolation strong { color: #ff9db7; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
+.finding-isolation small { margin-top: 2px; overflow: hidden; color: var(--muted-bright); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.finding-isolation button,
+.finding-isolate {
+  border: 1px solid rgba(255, 91, 132, 0.36);
+  border-radius: 7px;
+  background: rgba(255, 91, 132, 0.09);
+  color: #ffb0c4;
+  cursor: pointer;
+}
+.finding-isolation button { flex: 0 0 auto; padding: 6px 8px; font-size: 8px; }
+.finding-isolation button:hover,
+.finding-isolate:hover { background: rgba(255, 91, 132, 0.17); }
+
 .icon-button {
   min-height: 31px;
   display: inline-flex;
@@ -1002,11 +1102,96 @@ kbd {
 .finding-card.severity-error { --finding-color: var(--danger); }
 .finding-card.severity-warning { --finding-color: var(--warning); }
 .finding-card.severity-info { --finding-color: var(--cyan); }
+.finding-card.diagnostic-cycle { --diagnostic-color: #ff5986; }
+.finding-card.diagnostic-hub { --diagnostic-color: #42d3e8; }
+.finding-card.diagnostic-boundary-sprawl { --diagnostic-color: #ffb847; }
+.finding-card.diagnostic-card::before { background: var(--diagnostic-color); }
 .finding-card h4 { margin: 0; font-size: 10px; font-weight: 600; line-height: 1.35; }
 .finding-card p { margin: 6px 0 0; color: var(--muted-bright); font-size: 8px; line-height: 1.5; }
 .finding-meta { display: flex; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 7px; text-transform: uppercase; letter-spacing: 0.07em; }
 .recommendation { padding-top: 7px; border-top: 1px solid var(--line); }
 .recommendation strong { color: var(--cyan); font-size: 7px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+.spaghetti-summary {
+  background:
+    radial-gradient(circle at 15% 0%, rgba(255, 53, 106, 0.12), transparent 55%),
+    radial-gradient(circle at 90% 30%, rgba(99, 214, 227, 0.06), transparent 48%);
+}
+
+.spaghetti-summary > p:not(.eyebrow) {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.diagnostic-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.diagnostic-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-bright);
+  font-size: 7px;
+}
+
+.diagnostic-key i {
+  width: 7px;
+  height: 7px;
+  display: inline-block;
+  background: var(--diagnostic-color);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--diagnostic-color) 70%, transparent);
+}
+.diagnostic-key.diagnostic-cycle { --diagnostic-color: #ff5986; }
+.diagnostic-key.diagnostic-cycle i { border-radius: 50%; }
+.diagnostic-key.diagnostic-hub { --diagnostic-color: #42d3e8; }
+.diagnostic-key.diagnostic-hub i { clip-path: polygon(40% 0, 60% 0, 60% 40%, 100% 40%, 100% 60%, 60% 60%, 60% 100%, 40% 100%, 40% 60%, 0 60%, 0 40%, 40% 40%); }
+.diagnostic-key.diagnostic-boundary-sprawl { --diagnostic-color: #ffb847; }
+.diagnostic-key.diagnostic-boundary-sprawl i { transform: rotate(45deg); }
+.diagnostic-key b { font-weight: 560; }
+
+.diagnostic-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.diagnostic-class-badge,
+.severity-chip {
+  font-size: 7px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.diagnostic-class-badge { color: var(--diagnostic-color); }
+.severity-chip { padding: 2px 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.severity-chip.severity-warning { color: var(--warning); }
+.severity-chip.severity-error { color: var(--danger); }
+.severity-chip.severity-info { color: var(--cyan); }
+.finding-card .diagnostic-summary { color: var(--text); font-weight: 530; }
+
+.finding-isolate {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 8px;
+  text-align: left;
+}
+.finding-isolate span { font-size: 8px; font-weight: 620; }
+.finding-isolate small { color: var(--muted); font-size: 7px; }
 
 .neighbor-card {
   padding: 9px 10px;

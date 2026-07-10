@@ -18,6 +18,8 @@ pub(crate) struct SnapshotInput<'a> {
     pub content_hash: &'a str,
     pub tracked_file_count: usize,
     pub commit_issue_reference_count: usize,
+    pub history_mode: &'a str,
+    pub visible_commit_count: usize,
     pub snapshot_attributes: serde_json::Value,
 }
 
@@ -56,8 +58,8 @@ pub(crate) fn persist_snapshot(
             repository_id,
             input.repository.revision,
             input.content_hash,
-            input.repository.history_mode(),
-            input.repository.commits.len() as i64,
+            input.history_mode,
+            input.visible_commit_count as i64,
             started_at,
             env!("CARGO_PKG_VERSION"),
             snapshot_attributes,
@@ -359,15 +361,23 @@ fn insert_metrics(
         ),
         (
             "visible_commit_count",
-            input.repository.commits.len() as f64,
+            input.visible_commit_count as f64,
             "commits",
-            "git-rev-list",
+            if input.history_mode == "absent" {
+                "history-policy"
+            } else {
+                "git-rev-list"
+            },
         ),
         (
             "commit_issue_reference_count",
             input.commit_issue_reference_count as f64,
             "references",
-            "commit-message-regex",
+            if input.history_mode == "absent" {
+                "history-policy"
+            } else {
+                "commit-message-regex"
+            },
         ),
         (
             "node_count",

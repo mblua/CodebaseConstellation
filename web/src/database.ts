@@ -14,7 +14,10 @@ import type {
   CapabilityStatus,
   EdgeKindInfo,
   EvidenceInfo,
+  FindingAttachmentRole,
+  FindingEdgeAttachment,
   FindingInfo,
+  FindingNodeAttachment,
   GraphDataset,
   LabelCandidate,
   LayoutInfo,
@@ -108,6 +111,14 @@ function asBigInt(value: SQLiteValue | undefined, context: string): bigint {
   if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === "string" && /^\d+$/.test(value)) return BigInt(value);
   throw new DatabaseContractError(`${context} must be a non-negative 64-bit integer`);
+}
+
+function asFindingRole(value: SQLiteValue | undefined, context: string): FindingAttachmentRole {
+  const role = asString(value, context);
+  if (role !== "primary" && role !== "participant" && role !== "evidence") {
+    throw new DatabaseContractError(`${context} has unknown finding role ${role}`);
+  }
+  return role;
 }
 
 function asBlob(value: SQLiteValue | undefined, context: string): Uint8Array {
@@ -447,6 +458,8 @@ export class GraphDatabase {
 
     const nodeIndexById = new Map<string, number>();
     positions.nodeIds.forEach((nodeId, index) => nodeIndexById.set(nodeId.toString(), index));
+    const edgeIndexById = new Map<string, number>();
+    edges.edgeIds.forEach((edgeId, index) => edgeIndexById.set(edgeId.toString(), index));
     this.#dataset = {
       sourceLabel: this.sourceLabel,
       snapshot,
@@ -457,6 +470,7 @@ export class GraphDatabase {
       positions,
       edges,
       nodeIndexById,
+      edgeIndexById,
     };
     return this.#dataset;
   }
@@ -524,26 +538,77 @@ export class GraphDatabase {
 
   async getGlobalFindings(): Promise<FindingInfo[]> {
     const dataset = await this.loadGraph();
-    const rows = await this.#query(
-      `SELECT ft.id, ft.title, fo.detail, ft.recommendation, ft.category,
-              ft.severity, ft.status
-       FROM finding_occurrences AS fo
-       JOIN finding_threads AS ft ON ft.id = fo.finding_id
-       WHERE fo.snapshot_id = ?
-       ORDER BY CASE ft.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, ft.id
-       LIMIT 100`,
-      [dataset.snapshot.id],
-    );
-    return rows.map((row) => this.#findingFromRow(row, null));
+    const [rows, nodeRows, edgeRows] = await Promise.all([
+      this.#query(
+        `SELECT ft.id, ft.rule_key, ft.title, fo.detail, ft.recommendation, ft.category,
+                ft.severity, ft.status, ft.attributes_json AS thread_attributes_json,
+                fo.attributes_json AS occurrence_attributes_json
+         FROM finding_occurrences AS fo
+         JOIN finding_threads AS ft ON ft.id = fo.finding_id
+         WHERE fo.snapshot_id = ?
+         ORDER BY CASE ft.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, ft.id
+         LIMIT 100`,
+        [dataset.snapshot.id],
+      ),
+      this.#query(
+        `SELECT finding_id, node_id, role
+         FROM finding_nodes
+         WHERE snapshot_id = ?
+         ORDER BY finding_id, CASE role WHEN 'primary' THEN 0 WHEN 'participant' THEN 1 ELSE 2 END, node_id`,
+        [dataset.snapshot.id],
+      ),
+      this.#query(
+        `SELECT finding_id, edge_id, role
+         FROM finding_edges
+         WHERE snapshot_id = ?
+         ORDER BY finding_id, CASE role WHEN 'primary' THEN 0 WHEN 'participant' THEN 1 ELSE 2 END, edge_id`,
+        [dataset.snapshot.id],
+      ),
+    ]);
+    const nodesByFinding = new Map<string, FindingNodeAttachment[]>();
+    for (const row of nodeRows) {
+      const findingId = asBigInt(row.finding_id, "finding_nodes.finding_id").toString();
+      const attachments = nodesByFinding.get(findingId) ?? [];
+      attachments.push({
+        id: asBigInt(row.node_id, "finding_nodes.node_id"),
+        role: asFindingRole(row.role, "finding_nodes.role"),
+      });
+      nodesByFinding.set(findingId, attachments);
+    }
+    const edgesByFinding = new Map<string, FindingEdgeAttachment[]>();
+    for (const row of edgeRows) {
+      const findingId = asBigInt(row.finding_id, "finding_edges.finding_id").toString();
+      const attachments = edgesByFinding.get(findingId) ?? [];
+      attachments.push({
+        id: asBigInt(row.edge_id, "finding_edges.edge_id"),
+        role: asFindingRole(row.role, "finding_edges.role"),
+      });
+      edgesByFinding.set(findingId, attachments);
+    }
+    return rows.map((row) => {
+      const findingId = asBigInt(row.id, "finding id");
+      return this.#findingFromRow(
+        row,
+        null,
+        nodesByFinding.get(findingId.toString()) ?? [],
+        edgesByFinding.get(findingId.toString()) ?? [],
+      );
+    });
   }
 
-  #findingFromRow(row: Row, role: string | null): FindingInfo {
+  #findingFromRow(
+    row: Row,
+    role: string | null,
+    nodes: FindingNodeAttachment[] = [],
+    edges: FindingEdgeAttachment[] = [],
+  ): FindingInfo {
     const severity = asString(row.severity, "finding severity");
     if (severity !== "info" && severity !== "warning" && severity !== "error") {
       throw new DatabaseContractError(`unknown finding severity ${severity}`);
     }
     return {
       id: asBigInt(row.id, "finding id"),
+      ruleKey: asString(row.rule_key, "finding rule key"),
       title: asString(row.title, "finding title"),
       detail: asString(row.detail, "finding detail"),
       recommendation: asString(row.recommendation, "finding recommendation"),
@@ -551,6 +616,12 @@ export class GraphDatabase {
       severity,
       status: asString(row.status, "finding status"),
       role,
+      attributes: {
+        ...parseObject(row.thread_attributes_json, "finding_threads.attributes_json"),
+        ...parseObject(row.occurrence_attributes_json, "finding_occurrences.attributes_json"),
+      },
+      nodes,
+      edges,
     };
   }
 
@@ -573,8 +644,11 @@ export class GraphDatabase {
         [dataset.snapshot.id, nodeId, nodeId, nodeId, nodeId, nodeId],
       ),
       this.#query(
-        `SELECT ft.id, ft.title, fo.detail, ft.recommendation, ft.category,
-                ft.severity, ft.status, fn.role
+        `SELECT ft.id, ft.rule_key, ft.title, fo.detail, ft.recommendation, ft.category,
+                ft.severity, ft.status, fn.role,
+                ft.attributes_json AS thread_attributes_json,
+                fo.attributes_json AS occurrence_attributes_json,
+                fn.node_id
          FROM finding_nodes AS fn
          JOIN finding_occurrences AS fo
            ON fo.finding_id = fn.finding_id AND fo.snapshot_id = fn.snapshot_id
@@ -648,7 +722,14 @@ export class GraphDatabase {
       attributes: parseObject(node.attributes_json, "nodes.attributes_json"),
       metrics,
       neighbors: [...neighborByEdge.values()],
-      findings: findingRows.map((row) => this.#findingFromRow(row, asString(row.role, "finding_nodes.role"))),
+      findings: findingRows.map((row) => this.#findingFromRow(
+        row,
+        asFindingRole(row.role, "finding_nodes.role"),
+        [{
+          id: asBigInt(row.node_id, "finding_nodes.node_id"),
+          role: asFindingRole(row.role, "finding_nodes.role"),
+        }],
+      )),
     };
   }
 }

@@ -25,6 +25,17 @@ test("loads the v1 seed and supports an investigation flow", async ({ page }) =>
   await expect(page.locator("canvas.graph-canvas")).toBeVisible();
   await expect(page.locator("#capability-list")).toContainText("degraded");
 
+  const spaghetti = page.locator("#spaghetti-mode");
+  await expect(spaghetti).toBeVisible();
+  await spaghetti.click();
+  await expect(spaghetti).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#detail-panel h2")).toHaveText("Spaghetti investigation");
+  await expect(page.locator("#detail-panel")).toContainText("No cycle, dependency-hub, or boundary-sprawl findings");
+  await expect(page.locator(".layer-button", { hasText: "Change" })).toBeDisabled();
+  await spaghetti.click();
+  await expect(spaghetti).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#detail-panel h2")).toHaveText("Architecture overview");
+
   await page.locator("#node-search").fill("sessions_persistence");
   const result = page.locator(".search-result", { hasText: "sessions_persistence.rs" }).first();
   await expect(result).toBeVisible();

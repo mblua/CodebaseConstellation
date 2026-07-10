@@ -7,10 +7,19 @@
 From the workspace root:
 
 ```powershell
-cargo run -p constellation-ingest -- scan --repo C:\path\to\repository --db C:\path\to\constellation.sqlite
+cargo run -p constellation-ingest -- scan --repo C:\path\to\repository --db C:\path\to\constellation.sqlite --history off
 ```
 
 The command prints a JSON report containing the snapshot id, real node/edge counts, history mode, and every capability gate. Paths are inputs; no local repository or database path is compiled into the binary.
+
+`--history` accepts two policies:
+
+| Policy | Behavior |
+| --- | --- |
+| `off` | Default. Does not traverse Git history; writes `history_mode='absent'`, zero visible commits, no change nodes/edges, and explicitly unavailable history capabilities. |
+| `auto` | Preserves full/shallow detection and emits visible commits, `#<n>` issues, `modifies`, `references`, and derived `touches`. |
+
+Omitting `--history` is equivalent to `--history off`, which is the current product scope. Use `--history auto` only when change-history layers are wanted.
 
 ## MVP coverage
 
@@ -18,7 +27,8 @@ The command prints a JSON report containing the snapshot id, real node/edge coun
 - npm and Cargo packages, package membership, internal or declared external dependencies, and manifest evidence.
 - Conservative TypeScript/TSX static, side-effect, re-export, and literal dynamic imports.
 - Conservative Rust file-backed `mod`, crate-relative `use`, and declared dependency-crate imports. This resolver does not claim macro expansion or symbol resolution; the capability remains `degraded` until the planned SCIP adapter replaces it.
-- Every visible commit, current-snapshot `modifies` edges, `#<n>` references, and derived issue-to-file `touches`. Shallow history is explicitly `degraded`, even when it produces edges.
+- With `--history auto`, every visible commit, current-snapshot `modifies` edges, `#<n>` references, and derived issue-to-file `touches`. Shallow history is explicitly `degraded`, even when it produces edges.
+- Every emitted import edge retains syntax evidence pointing to its source file and line for investigation views.
 
 All graph rows and the transition from `running` to `complete` are committed in one transaction. If graph insertion or conformance validation fails, that transaction rolls back and the snapshot is marked `failed`; it cannot become partially `complete`.
 

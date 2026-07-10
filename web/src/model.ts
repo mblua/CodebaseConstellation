@@ -86,6 +86,7 @@ export interface GraphDataset {
   positions: DecodedPositions;
   edges: DecodedEdges;
   nodeIndexById: Map<string, number>;
+  edgeIndexById: Map<string, number>;
 }
 
 export interface SearchResult {
@@ -132,6 +133,7 @@ export interface NeighborInfo {
 
 export interface FindingInfo {
   id: bigint;
+  ruleKey: string;
   title: string;
   detail: string;
   recommendation: string;
@@ -139,6 +141,21 @@ export interface FindingInfo {
   severity: "info" | "warning" | "error";
   status: string;
   role: string | null;
+  attributes: Record<string, unknown>;
+  nodes: FindingNodeAttachment[];
+  edges: FindingEdgeAttachment[];
+}
+
+export type FindingAttachmentRole = "primary" | "participant" | "evidence";
+
+export interface FindingNodeAttachment {
+  id: bigint;
+  role: FindingAttachmentRole;
+}
+
+export interface FindingEdgeAttachment {
+  id: bigint;
+  role: FindingAttachmentRole;
 }
 
 export interface NodeDetail {

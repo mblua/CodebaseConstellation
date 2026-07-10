@@ -147,6 +147,21 @@ class PipelineIntegrationTests(unittest.TestCase):
                 ).fetchone()[0],
                 20,
             )
+            self.assertEqual(
+                {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT rule_key FROM finding_threads WHERE rule_key IN ('history_coverage','large_file')"
+                    )
+                },
+                {"history_coverage", "large_file"},
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM node_metrics WHERE snapshot_id=1 AND key='loc'"
+                ).fetchone()[0],
+                9,
+            )
 
             position_row = own_blobs["positions"]
             position_content = bytes(position_row["content"])
@@ -440,11 +455,11 @@ class PipelineIntegrationTests(unittest.TestCase):
         second = run_pipeline(
             RunConfig(database=database, snapshot_id=2, seed=11, iterations=3)
         )
-        self.assertEqual(first.findings_materialized, 2)
+        self.assertEqual(first.findings_materialized, 1)
         self.assertEqual(first.layout_id, repeated.layout_id)
         self.assertEqual(first.positions_sha256, repeated.positions_sha256)
         self.assertGreater(first.cluster_count, 1)
-        self.assertEqual(second.findings_materialized, 2)
+        self.assertEqual(second.findings_materialized, 1)
         self.assertEqual(second.previous_snapshot_id, 1)
         self.assertEqual(second.previous_seed_count, 2)
         with closing(sqlite3.connect(database)) as connection:
@@ -461,7 +476,7 @@ class PipelineIntegrationTests(unittest.TestCase):
                 connection.execute(
                     "SELECT count(*) FROM finding_threads WHERE repository_id=1"
                 ).fetchone()[0],
-                2,
+                1,
             )
             occurrences = [
                 row[0]
@@ -474,7 +489,7 @@ class PipelineIntegrationTests(unittest.TestCase):
                     """
                 )
             ]
-            self.assertEqual(occurrences, [2, 2])
+            self.assertEqual(occurrences, [2])
 
 
 if __name__ == "__main__":

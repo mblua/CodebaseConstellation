@@ -1,8 +1,8 @@
 # CodebaseConstellation graph analytics
 
 This isolated package reads a complete SQLite contract-v1 snapshot and appends graph
-metrics, actionable dependency-cycle finding occurrences, and one renderer-ready 3D
-layout. It does not scan source code, alter ingest tables, or render in the browser.
+metrics, evidence-backed current-state architecture findings, and one renderer-ready
+3D layout. It does not scan source code, alter ingest tables, or render in the browser.
 
 ## Runtime
 
@@ -62,6 +62,8 @@ unrelated ingest metrics are preserved.
 | node | `graph.component_id`, `graph.component_size`, `graph.orphan` | stable-key-ordered weak components and zero-degree nodes |
 | node | `centrality.pagerank`, `centrality.betweenness_sampled`, `centrality.eigenvector`, `graph.k_core` | NetworKit rankings over non-change architectural edges |
 | node | `structure.depth` | NetworKit BFS depth over `contains`, `groups`, and `declares` |
+| internal file | `architecture.cross_boundary_in`, `architecture.cross_boundary_out` | internal file-to-file imports crossing package or dependency-zone identity |
+| internal file | `architecture.dependency_zone_count` | distinct outgoing cross-boundary target zones |
 | package | `package.afferent_coupling`, `package.efferent_coupling`, `package.instability` | distinct incoming/outgoing package dependencies and `Ce/(Ca+Ce)` |
 | package | `package.internal_relation_count`, `package.outgoing_relation_count`, `package.cohesion_ratio` | internal and outgoing relation evidence; cohesion is `internal/(internal+outgoing)` |
 | snapshot | `graph.component_count`, `graph.orphan_count`, cycle counts, input counts, sample count | aggregate run signals |
@@ -71,6 +73,13 @@ the explicit membership of their declaring artifact. When workspace/root package
 overlap, the explicitly grouped package with the deepest declared manifest `root` wins
 the single layout/metric membership. Directory containment is never treated as package
 ownership.
+
+Each internal file receives one deterministic dependency zone. Its path is made
+relative to the deepest explicitly grouped internal package root. A leading `src`,
+`lib`, or `app` segment is discarded only when another directory follows it; the next
+directory is the zone, while files directly in the remaining root use `<root>`. Zone
+identity includes the stable package key, so two packages' identically named folders
+remain distinct. Files without explicit package membership use `<unpackaged>`.
 
 The `git_history` and `issue_file_touches` capabilities gate the base layout. If any
 declared history capability is degraded/unavailable (or none declares complete
@@ -82,17 +91,28 @@ therefore cannot dominate either ownership signals or the initial visual structu
 
 ## Findings
 
-Only dependency cycles become findings:
+Current-state findings are:
 
-- direct `imports`/`depends_on`/`calls` strongly connected components; and
-- cycles in the package-collapsed architectural dependency graph.
+- `architecture_dependency_cycle` warnings for strongly connected components of
+  internal files, attaching every participating file and internal `imports` edge;
+- the existing package-collapsed dependency-cycle warning;
+- `architecture_dependency_hub` informational findings when an internal file has both
+  inbound and outbound imports and total fan reaches `max(12, P98)`. P98 uses the
+  deterministic nearest-rank definition over dependency-bearing internal files;
+- `architecture_boundary_sprawl` warnings at five outgoing cross-boundary imports and
+  three distinct target zones.
 
-Each finding includes a concrete dependency-inversion recommendation. Its fingerprint
-is a rule-versioned SHA-256 of sorted stable node keys, so database ids may change on a
-rescan without breaking the thread. Occurrences and evidence edges are replaced for a
-rerun of the same snapshot; threads persist across snapshots and resolve only when the
-latest complete snapshot no longer observes them. High centrality or coupling values
-alone never become defects.
+Every finding attaches the primary/participating files and all supporting import edges
+needed to reproduce it. Thresholds, measured values, source zone, and target zones are
+stored in `attributes_json`. Fingerprints are rule-versioned SHA-256 values over stable
+node keys, so database ids may change on a rescan without breaking the thread.
+Occurrences and evidence are replaced idempotently for a rerun; unrelated metrics and
+finding rules are preserved. A high fan-in-only shared contract is intentionally not a
+hub finding.
+
+Dependency zones are detected path heuristics, not declarations that a dependency is
+forbidden. They should be presented as investigation boundaries until a repository
+supplies an explicit architecture policy.
 
 ## Layout and blobs
 
@@ -127,5 +147,6 @@ graph-analytics/.venv/Scripts/python.exe -m unittest discover `
 The suite covers the real seed fixture, golden headers/records, SHA and size equations,
 edge indexes, deterministic replacement, layout isolation, degraded-history exclusion
 with blob retention, adaptive multicluster fallback, direct and package cycles, stable
-finding threads across rescans, previous-position seeding, disconnected graphs, and a
-singleton.
+finding threads across rescans, exact zone derivation, nearest-rank P98, hub/sprawl
+thresholds and evidence attachments, external/change exclusion, previous-position
+seeding, disconnected graphs, and a singleton.

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use constellation_ingest::{scan, ScanOptions};
+use constellation_ingest::{scan, HistoryPolicy, ScanOptions};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -79,16 +79,94 @@ serde = "1"
         ],
     );
 
+    let off_database = temporary.path().join("history-off.sqlite");
+    let off_options = ScanOptions::new(repository.clone(), off_database.clone());
+    assert_eq!(off_options.history, HistoryPolicy::Off);
+    let off_report = scan(&off_options).expect("history-off scan succeeds");
+    assert_eq!(off_report.status, "complete");
+    assert_eq!(off_report.history_mode, "absent");
+    assert_eq!(off_report.visible_commit_count, 0);
+    assert_eq!(off_report.tracked_file_count, 6);
+
+    let off_connection = Connection::open(&off_database).expect("open history-off database");
+    assert_eq!(
+        scalar(
+            &off_connection,
+            "SELECT count(*) FROM snapshots WHERE history_mode = 'absent' AND visible_commit_count = 0"
+        ),
+        1
+    );
+    assert_eq!(
+        scalar(
+            &off_connection,
+            "SELECT count(*) FROM nodes WHERE kind IN ('commit', 'issue')"
+        ),
+        0
+    );
+    assert_eq!(
+        scalar(
+            &off_connection,
+            "SELECT count(*) FROM edges WHERE kind IN ('modifies', 'references', 'touches')"
+        ),
+        0
+    );
+    assert_eq!(
+        scalar(
+            &off_connection,
+            r#"
+            SELECT count(*) FROM snapshot_capabilities
+            WHERE capability IN ('git_history', 'issue_file_touches')
+              AND status = 'unavailable'
+              AND coverage IS NULL
+              AND detail LIKE '%intentionally disabled%'
+            "#
+        ),
+        2
+    );
+    assert_eq!(
+        scalar(
+            &off_connection,
+            r#"
+            SELECT CAST(value AS INTEGER) FROM snapshot_metrics
+            WHERE key = 'visible_commit_count' AND provenance = 'history-policy'
+            "#
+        ),
+        0
+    );
+    assert_eq!(
+        scalar(
+            &off_connection,
+            r#"
+            SELECT count(*)
+            FROM edges AS e
+            WHERE e.kind = 'imports'
+              AND NOT EXISTS (
+                  SELECT 1 FROM edge_evidence AS ev
+                  WHERE ev.snapshot_id = e.snapshot_id
+                    AND ev.edge_id = e.id
+                    AND ev.file_node_id = e.source_node_id
+                    AND ev.start_line IS NOT NULL
+                    AND ev.end_line = ev.start_line
+              )
+            "#
+        ),
+        0,
+        "every import edge retains source-file and line evidence"
+    );
+
     let database = temporary.path().join("scan.sqlite");
     let report = scan(&ScanOptions {
         repo: repository.clone(),
         database: database.clone(),
+        history: HistoryPolicy::Auto,
     })
     .expect("scan succeeds");
     assert_eq!(report.status, "complete");
     assert_eq!(report.repository_key, "repo:tiny");
     assert_eq!(report.history_mode, "full");
+    assert_eq!(report.visible_commit_count, 1);
     assert_eq!(report.tracked_file_count, 6);
+    assert_ne!(off_report.content_hash, report.content_hash);
 
     let connection = Connection::open(&database).expect("open scan database");
     connection
@@ -231,11 +309,22 @@ serde = "1"
         scalar(&connection, "SELECT count(*) FROM pragma_foreign_key_check"),
         0
     );
+    assert_eq!(
+        current_node_keys(&off_connection),
+        current_node_keys(&connection),
+        "history policy must not change current-state nodes"
+    );
+    assert_eq!(
+        current_edge_keys(&off_connection),
+        current_edge_keys(&connection),
+        "history policy must not change current-state edges"
+    );
 
     let second_database = temporary.path().join("second.sqlite");
     let second = scan(&ScanOptions {
         repo: repository,
         database: second_database.clone(),
+        history: HistoryPolicy::Auto,
     })
     .expect("second scan succeeds");
     assert_eq!(report.content_hash, second.content_hash);
@@ -274,6 +363,7 @@ serde = "1"
     let failure = scan(&ScanOptions {
         repo: temporary.path().join("repository"),
         database,
+        history: HistoryPolicy::Auto,
     })
     .expect_err("injected graph write must fail");
     assert!(failure.to_string().contains("failed atomically"));
@@ -332,4 +422,27 @@ fn stable_keys(connection: &Connection) -> Vec<String> {
         .expect("stable key rows")
         .collect::<rusqlite::Result<Vec<_>>>()
         .expect("stable keys")
+}
+
+fn current_node_keys(connection: &Connection) -> Vec<String> {
+    string_column(
+        connection,
+        "SELECT stable_key FROM nodes WHERE kind NOT IN ('commit', 'issue') ORDER BY stable_key",
+    )
+}
+
+fn current_edge_keys(connection: &Connection) -> Vec<String> {
+    string_column(
+        connection,
+        "SELECT stable_key FROM edges WHERE kind NOT IN ('modifies', 'references', 'touches') ORDER BY stable_key",
+    )
+}
+
+fn string_column(connection: &Connection, sql: &str) -> Vec<String> {
+    let mut statement = connection.prepare(sql).expect("string column query");
+    statement
+        .query_map([], |row| row.get(0))
+        .expect("string column rows")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("string column values")
 }

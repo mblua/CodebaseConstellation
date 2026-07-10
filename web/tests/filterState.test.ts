@@ -62,6 +62,7 @@ function dataset(): GraphDataset {
     positions,
     edges,
     nodeIndexById: new Map([["10", 0], ["11", 1], ["12", 2]]),
+    edgeIndexById: new Map([["20", 0], ["21", 1], ["22", 2]]),
   };
 }
 
@@ -129,5 +130,26 @@ describe("filter and selection state", () => {
     expect(filters.selectedNodeIndex).toBeNull();
     expect([...state.nodeAlpha]).toEqual([0, 0, 0]);
     expect(state.visibleEdgeCount).toBe(0);
+  });
+
+  it("isolates exactly the finding's attached node and edge indices", () => {
+    const graph = dataset();
+    const filters = createInitialFilterState(graph);
+    filters.enabledNodeKinds.clear();
+    filters.isolation = {
+      findingId: 99n,
+      nodeIndices: new Set([0, 2]),
+      edgeIndices: new Set([1]),
+    };
+    filters.diagnosticNodeClasses.set([1, 2, 3]);
+    filters.selectedNodeIndex = 0;
+    const state = computeRenderState(graph, filters);
+    expect([...state.nodeAlpha]).toEqual([1, 0, 1]);
+    expect([...state.edgeAlpha]).toEqual([0, 1, 0]);
+    expect([...state.nodeDiagnostic]).toEqual([1, 2, 3]);
+    expect(state.visibleNodeCount).toBe(2);
+    expect(state.visibleEdgeCount).toBe(1);
+    expect(state.neighbors).toEqual(new Set([2]));
+    expect(state.selectionPinned).toBe(false);
   });
 });

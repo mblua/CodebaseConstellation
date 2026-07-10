@@ -48,3 +48,15 @@ Consumers must inspect `snapshot_capabilities`, not infer quality from non-empty
 - `unavailable` when no reliable issue convention was found.
 
 The renderer may show degraded layers, but must label them. Analytics must not rank a degraded relation as if it had full coverage.
+
+## Current-state diagnostics
+
+The default product workflow may intentionally disable history. Such scans record
+`history_mode = 'absent'`, emit no change nodes or edges, and mark the two history
+capabilities unavailable with an explicit "disabled" detail. This is a supported
+snapshot shape, not a degraded architectural analysis.
+
+Spaghetti diagnostics operate only on current internal file dependencies. Their zone
+semantics, metric keys, evidence requirements, finding thresholds, and browser
+isolation behavior are frozen in
+[`decisions/0003-current-state-spaghetti-diagnostics.md`](decisions/0003-current-state-spaghetti-diagnostics.md).

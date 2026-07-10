@@ -78,6 +78,29 @@ class Cycle:
 
 
 @dataclass(frozen=True, slots=True)
+class DependencyZone:
+    package_id: int | None
+    package_key: str
+    package_root: str
+    name: str
+    identity: str
+
+
+@dataclass(frozen=True, slots=True)
+class FileDependencyStats:
+    node_id: int
+    fan_in: int
+    fan_out: int
+    cross_boundary_in: int
+    cross_boundary_out: int
+    dependency_zone_count: int
+    incoming_edge_ids: tuple[int, ...]
+    outgoing_edge_ids: tuple[int, ...]
+    outgoing_cross_boundary_edge_ids: tuple[int, ...]
+    outgoing_cross_boundary_zone_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FindingCandidate:
     fingerprint: str
     rule_key: str
@@ -99,6 +122,11 @@ class AnalyticsResult:
     package_cycles: list[Cycle] = field(default_factory=list)
     package_by_node_id: dict[int, int] = field(default_factory=dict)
     component_by_node_id: dict[int, int] = field(default_factory=dict)
+    dependency_zone_by_node_id: dict[int, DependencyZone] = field(default_factory=dict)
+    file_dependency_stats: dict[int, FileDependencyStats] = field(default_factory=dict)
+    dependency_hub_p98: int = 0
+    dependency_hub_threshold: int = 12
+    dependency_file_population: int = 0
     betweenness_samples: int = 0
 
 

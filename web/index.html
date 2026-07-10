@@ -56,6 +56,21 @@
             <div id="graph-stats" class="stat-row" aria-live="polite"></div>
           </section>
 
+          <section class="rail-section investigation-section">
+            <div class="section-heading">
+              <h2>Investigation</h2>
+              <span>Evidence-backed presets</span>
+            </div>
+            <button id="spaghetti-mode" class="preset-button" type="button" aria-pressed="false">
+              <span class="preset-mark" aria-hidden="true">⌁</span>
+              <span class="preset-copy">
+                <strong>Spaghetti</strong>
+                <small>Cycles · hubs · boundary sprawl</small>
+              </span>
+              <span class="preset-state">Explore</span>
+            </button>
+          </section>
+
           <section class="rail-section">
             <div class="section-heading">
               <h2>Layers</h2>
@@ -124,6 +139,13 @@
             <button id="clear-selection" class="icon-button" type="button" title="Clear selection (Esc)" disabled>
               <span aria-hidden="true">×</span><span>Clear</span>
             </button>
+          </div>
+          <div id="finding-isolation" class="finding-isolation" hidden>
+            <span>
+              <strong>Finding isolated</strong>
+              <small id="finding-isolation-copy"></small>
+            </span>
+            <button id="exit-finding-isolation" type="button">Show full current state</button>
           </div>
           <div class="viewport-help">
             <span><i class="mouse-icon"></i> drag to orbit</span>

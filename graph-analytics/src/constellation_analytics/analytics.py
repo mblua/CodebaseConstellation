@@ -9,14 +9,16 @@ import networkit as nk
 from .model import (
     AnalyticsResult,
     Cycle,
+    DependencyZone,
     Edge,
+    FileDependencyStats,
     NodeMetric,
     SnapshotGraph,
     SnapshotMetric,
 )
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 PROVENANCE = f"constellation-analytics:{VERSION}"
 
 FAN_RELATION_KINDS = frozenset(
@@ -32,9 +34,8 @@ FAN_RELATION_KINDS = frozenset(
         "flows_to",
     }
 )
-NODE_CYCLE_RELATION_KINDS = frozenset({"imports", "depends_on", "calls"})
-NODE_CYCLE_KINDS = frozenset({"package", "module", "file", "symbol"})
 STRUCTURAL_DEPTH_KINDS = frozenset({"contains", "groups", "declares"})
+CONVENTIONAL_SOURCE_ROOTS = frozenset({"src", "lib", "app"})
 
 OWNED_NODE_METRIC_KEYS = frozenset(
     {
@@ -51,6 +52,9 @@ OWNED_NODE_METRIC_KEYS = frozenset(
         "graph.k_core",
         "structure.depth",
         "architecture.dependency_cycle_member",
+        "architecture.cross_boundary_in",
+        "architecture.cross_boundary_out",
+        "architecture.dependency_zone_count",
         "package.afferent_coupling",
         "package.efferent_coupling",
         "package.instability",
@@ -179,6 +183,26 @@ def _structural_depths(graph: SnapshotGraph) -> list[float]:
     ]
 
 
+def _normalise_relative_path(value: str) -> str:
+    normalised = value.replace("\\", "/").strip()
+    while normalised.startswith("./"):
+        normalised = normalised[2:]
+    return normalised.strip("/")
+
+
+def _package_root(package) -> str:
+    declared = package.attributes.get("root")
+    if isinstance(declared, str):
+        root = _normalise_relative_path(declared)
+        if root != ".":
+            return root
+    manifest = package.attributes.get("manifest")
+    if isinstance(manifest, str):
+        manifest_path = _normalise_relative_path(manifest)
+        return manifest_path.rsplit("/", 1)[0] if "/" in manifest_path else ""
+    return ""
+
+
 def _package_membership(graph: SnapshotGraph) -> dict[int, int]:
     nodes = graph.node_by_id
     membership = {node.id: node.id for node in graph.nodes if node.kind == "package"}
@@ -190,7 +214,7 @@ def _package_membership(graph: SnapshotGraph) -> dict[int, int]:
 
     def priority(package_id: int) -> tuple[int, int, str]:
         package = nodes[package_id]
-        root = str(package.attributes.get("root", "")).strip("/")
+        root = _package_root(package)
         depth = 0 if not root else root.count("/") + 1
         # Explicitly grouped overlapping packages choose the deepest declared root;
         # stable_key is only a deterministic tie-breaker, never inferred membership.
@@ -212,6 +236,115 @@ def _package_membership(graph: SnapshotGraph) -> dict[int, int]:
                 membership[edge.target_id] = package_id
                 changed = True
     return membership
+
+
+def _dependency_zones(
+    graph: SnapshotGraph,
+    package_by_node_id: dict[int, int],
+) -> dict[int, DependencyZone]:
+    nodes = graph.node_by_id
+    zones: dict[int, DependencyZone] = {}
+    for node in graph.nodes:
+        if node.kind != "file" or node.external:
+            continue
+        package_id = package_by_node_id.get(node.id)
+        package = nodes.get(package_id) if package_id is not None else None
+        if package is not None and package.external:
+            package = None
+            package_id = None
+        package_key = "<unpackaged>" if package is None else package.stable_key
+        package_root = "" if package is None else _package_root(package)
+        path = _normalise_relative_path(
+            node.path or node.stable_key.removeprefix("fs:")
+        )
+        if package_root and path.startswith(f"{package_root}/"):
+            relative_path = path[len(package_root) + 1 :]
+        else:
+            relative_path = path
+        segments = [segment for segment in relative_path.split("/") if segment]
+        directories = segments[:-1]
+        if len(directories) >= 2 and directories[0] in CONVENTIONAL_SOURCE_ROOTS:
+            directories = directories[1:]
+        zone_name = directories[0] if directories else "<root>"
+        zones[node.id] = DependencyZone(
+            package_id=package_id,
+            package_key=package_key,
+            package_root=package_root,
+            name=zone_name,
+            identity=f"{package_key}::{zone_name}",
+        )
+    return zones
+
+
+def _nearest_rank(values: Iterable[int], percentile: int) -> int:
+    ordered = sorted(int(value) for value in values)
+    if not ordered:
+        return 0
+    rank = max(1, math.ceil((percentile / 100.0) * len(ordered)))
+    return ordered[rank - 1]
+
+
+def _file_dependency_diagnostics(
+    graph: SnapshotGraph,
+    package_by_node_id: dict[int, int],
+) -> tuple[
+    dict[int, DependencyZone],
+    dict[int, FileDependencyStats],
+    int,
+    int,
+    int,
+]:
+    nodes = graph.node_by_id
+    zones = _dependency_zones(graph, package_by_node_id)
+    incoming: dict[int, list[int]] = defaultdict(list)
+    outgoing: dict[int, list[int]] = defaultdict(list)
+    outgoing_cross: dict[int, list[int]] = defaultdict(list)
+    incoming_cross_count: dict[int, int] = defaultdict(int)
+    outgoing_cross_zones: dict[int, set[str]] = defaultdict(set)
+
+    for edge in graph.edges:
+        source = nodes[edge.source_id]
+        target = nodes[edge.target_id]
+        if (
+            edge.kind != "imports"
+            or edge.category == "change"
+            or source.kind != "file"
+            or target.kind != "file"
+            or source.external
+            or target.external
+        ):
+            continue
+        incoming[target.id].append(edge.id)
+        outgoing[source.id].append(edge.id)
+        if zones[source.id].identity != zones[target.id].identity:
+            outgoing_cross[source.id].append(edge.id)
+            incoming_cross_count[target.id] += 1
+            outgoing_cross_zones[source.id].add(zones[target.id].identity)
+
+    stats: dict[int, FileDependencyStats] = {}
+    dependency_totals: list[int] = []
+    for node_id in sorted(zones, key=lambda candidate: nodes[candidate].stable_key):
+        incoming_ids = tuple(sorted(incoming[node_id]))
+        outgoing_ids = tuple(sorted(outgoing[node_id]))
+        cross_ids = tuple(sorted(outgoing_cross[node_id]))
+        cross_zone_ids = tuple(sorted(outgoing_cross_zones[node_id]))
+        total = len(incoming_ids) + len(outgoing_ids)
+        if total > 0:
+            dependency_totals.append(total)
+        stats[node_id] = FileDependencyStats(
+            node_id=node_id,
+            fan_in=len(incoming_ids),
+            fan_out=len(outgoing_ids),
+            cross_boundary_in=incoming_cross_count[node_id],
+            cross_boundary_out=len(cross_ids),
+            dependency_zone_count=len(cross_zone_ids),
+            incoming_edge_ids=incoming_ids,
+            outgoing_edge_ids=outgoing_ids,
+            outgoing_cross_boundary_edge_ids=cross_ids,
+            outgoing_cross_boundary_zone_ids=cross_zone_ids,
+        )
+    p98 = _nearest_rank(dependency_totals, 98)
+    return zones, stats, p98, max(12, p98), len(dependency_totals)
 
 
 def _strong_components(
@@ -239,12 +372,15 @@ def _strong_components(
 def _node_cycles(graph: SnapshotGraph) -> list[Cycle]:
     dense = graph.dense_index_by_id
     eligible = {
-        index for index, node in enumerate(graph.nodes) if node.kind in NODE_CYCLE_KINDS
+        index
+        for index, node in enumerate(graph.nodes)
+        if node.kind == "file" and not node.external
     }
     relevant_edges = [
         edge
         for edge in graph.edges
-        if edge.kind in NODE_CYCLE_RELATION_KINDS
+        if edge.kind == "imports"
+        and edge.category != "change"
         and dense[edge.source_id] in eligible
         and dense[edge.target_id] in eligible
     ]
@@ -276,7 +412,6 @@ def _package_metrics_and_cycles(
     )
     if not packages:
         return [], []
-    package_ids = {package.id for package in packages}
     incoming_packages: dict[int, set[int]] = defaultdict(set)
     outgoing_packages: dict[int, set[int]] = defaultdict(set)
     internal_count: dict[int, int] = defaultdict(int)
@@ -346,7 +481,9 @@ def _package_metrics_and_cycles(
                 )
             )
 
-    package_index = {package.id: index for index, package in enumerate(packages)}
+    cycle_packages = [package for package in packages if not package.external]
+    cycle_package_ids = {package.id for package in cycle_packages}
+    package_index = {package.id: index for index, package in enumerate(cycle_packages)}
     package_graph = SnapshotGraph(
         database=graph.database,
         snapshot_id=graph.snapshot_id,
@@ -354,19 +491,19 @@ def _package_metrics_and_cycles(
         started_at=graph.started_at,
         observed_at=graph.observed_at,
         content_hash=graph.content_hash,
-        nodes=tuple(packages),
+        nodes=tuple(cycle_packages),
         edges=(),
         capabilities=graph.capabilities,
     )
     pairs = {
         (package_index[source], package_index[target])
         for source, target in evidence_by_pair
-        if source in package_ids and target in package_ids
+        if source in cycle_package_ids and target in cycle_package_ids
     }
-    eligible = set(range(len(packages)))
+    eligible = set(range(len(cycle_packages)))
     cycles: list[Cycle] = []
     for indexes in _strong_components(package_graph, pairs, eligible):
-        participating = {packages[index].id for index in indexes}
+        participating = {cycle_packages[index].id for index in indexes}
         edge_ids = tuple(
             sorted(
                 edge_id
@@ -571,6 +708,39 @@ def compute_analytics(graph: SnapshotGraph, *, seed: int) -> AnalyticsResult:
 
     result.node_cycles = _node_cycles(graph)
     result.package_by_node_id = _package_membership(graph)
+    (
+        result.dependency_zone_by_node_id,
+        result.file_dependency_stats,
+        result.dependency_hub_p98,
+        result.dependency_hub_threshold,
+        result.dependency_file_population,
+    ) = _file_dependency_diagnostics(graph, result.package_by_node_id)
+    for node_id, stats in result.file_dependency_stats.items():
+        result.node_metrics.extend(
+            (
+                NodeMetric(
+                    node_id,
+                    "architecture.cross_boundary_in",
+                    float(stats.cross_boundary_in),
+                    "imports",
+                    f"{PROVENANCE};internal file imports crossing package/zone identity",
+                ),
+                NodeMetric(
+                    node_id,
+                    "architecture.cross_boundary_out",
+                    float(stats.cross_boundary_out),
+                    "imports",
+                    f"{PROVENANCE};internal file imports crossing package/zone identity",
+                ),
+                NodeMetric(
+                    node_id,
+                    "architecture.dependency_zone_count",
+                    float(stats.dependency_zone_count),
+                    "zones",
+                    f"{PROVENANCE};distinct outgoing cross-boundary target zones",
+                ),
+            )
+        )
     package_metrics, result.package_cycles = _package_metrics_and_cycles(
         graph, result.package_by_node_id
     )

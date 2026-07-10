@@ -35,25 +35,43 @@ npm run smoke
 
 The smoke test waits for SQLite validation and WebGL initialization, checks that the Structure-induced seed view contains 39 of 53 nodes and 49 of 92 edges, confirms degraded capability UI, searches for `sessions_persistence.rs`, requires exactly its six relationship cards (and rejects an unrelated `package.json` relation), opens its metrics and finding, enables dependencies, and writes `test-results/constellation-mvp.png`.
 
-An optional scale smoke exercises the ignored real AgentsCommander database. Put it at `../.local/agentscommander.sqlite`, rebuild, and run:
+An optional scale and diagnostics smoke exercises the ignored, history-off AgentsCommander database. Put it at `../.local/agentscommander-current.sqlite`, rebuild, and run:
 
 ```powershell
 npm run build
 npm run smoke:real
 ```
 
-If the database is absent the test is skipped. When present, it asserts that the Structure-only view frames its active 722-node subgraph, verifies every framed node is inside the camera frustum, selects `sessions_persistence.rs`, checks the refocused node and nearby structural context, and writes `test-results/agentscommander-real-overview.png` plus `test-results/agentscommander-real-selected.png`. `npm run smoke:all` runs both browser flows.
+If the database is absent the test is skipped. When present, it asserts the 782-node/3,635-edge current-source snapshot, confirms the 722-node Structure subgraph is entirely inside the camera frustum, verifies that history cards and the empty Change control are absent, and checks the 18 current relationships for `sessions_persistence.rs`. It then exercises all 27 recorded Spaghetti findings, exact attachment isolation, friendly file metrics, and return to the full 478-node/2,056-edge dependency view.
+
+The flow writes `test-results/agentscommander-real-overview.png`, `test-results/agentscommander-real-selected.png`, `test-results/agentscommander-spaghetti-overview.png`, and `test-results/agentscommander-spaghetti-isolated.png`. `npm run smoke:all` runs both browser flows.
+
+## Spaghetti investigation
+
+**Spaghetti** is a current-state preset, not a browser-computed score. It enables file, package, and directory kinds plus recorded dependency relations; it never enables change history. The browser reads cycle, dependency-hub, and boundary-sprawl findings and their `finding_nodes` / `finding_edges` attachments from SQLite, ranks open findings by severity and recorded impact, and marks participants in the existing point buffer:
+
+- pink ring: dependency-cycle participant;
+- cyan cross: dependency-hub participant;
+- amber diamond: detected boundary-sprawl participant;
+- white emphasis: the selected primary node.
+
+Choosing **Isolate finding** masks the existing node and edge buffers to exactly the attached IDs. It does not move coordinates or create per-participant scene objects. **Show full current state** clears only that isolation and returns to the complete Spaghetti dependency view.
+
+For files, recorded `architecture.fan_in`, `architecture.fan_out`, cross-boundary counts, dependency-zone count, cycle membership, and LOC receive friendly labels. Their values and findings remain analytics-owned; the browser does not derive replacements. “Boundary” means a detected package/path zone from the recorded analysis, not a declared forbidden dependency.
+
+When `history_mode = 'absent'`, the overview calls the database a current-source snapshot, omits visible-commit summary space and intentionally unavailable history capability cards, and omits Change when there are no change edges.
 
 ## Manual flow verified
 
 1. Load the default seed and confirm the initial graph shows the structural hierarchy rather than every relationship. A node participates in the canvas only when it is an endpoint of an enabled edge in an active layer, so dependency- and change-only outliers do not distort Structure framing.
 2. Drag to orbit, scroll to zoom, and use **Fit** (or `F`) to reframe all visible nodes.
 3. Enable **Dependencies** to reveal imports, package dependencies, calls, and invokes.
-4. Search for `sessions_persistence`, select the file, and confirm the 3,282-line metric, large-file finding, recommendation, neighbors, and edge evidence.
-5. Switch **Selection edges** between dim, hide, and keep-all behavior.
-6. Toggle node kinds and individual edge kinds; a selected node is cleared if its kind becomes hidden.
-7. Inspect **Data quality** and confirm change history and semantic/syntax coverage are visibly marked `degraded` for the seed.
-8. Use **Open .sqlite** and choose another contract-v1 file; a rejected magic/version/schema/blob produces a human-readable error while an already-open graph remains usable.
+4. Enter **Spaghetti**, compare the cycle/hub/boundary-sprawl legend with the ranked cards, isolate a finding, and use **Show full current state** to leave isolation.
+5. Search for `sessions_persistence`, select the file, and confirm the friendly dependency metrics, LOC, findings, neighbors, and edge evidence.
+6. Switch **Selection edges** between dim, hide, and keep-all behavior.
+7. Toggle node kinds and individual edge kinds; a selected node is cleared if its kind becomes hidden.
+8. Inspect **Data quality**. History-off snapshots intentionally omit history/issue cards; the older seed continues to show its degraded history capability.
+9. Use **Open .sqlite** and choose another contract-v1 file; a rejected magic/version/schema/blob produces a human-readable error while an already-open graph remains usable.
 
 Search has one intentional visibility exception: choosing a result pins that selected node even when it has no edge in the active layers. This makes the search result visible and focusable without silently changing the user's layer choices. Its neighbors and edges remain governed by the active layers, and clearing the selection returns the node to normal layer-induced visibility. The detail header marks this state as **pinned outside active layers**.
 
@@ -77,7 +95,7 @@ Decoder failures include the blob kind and record index where applicable.
 - Bloom is `SelectiveBloomEffect` and selects the points object, leaving edges and the scene background out of the bloom mask.
 - Labels use `troika-three-text` `BatchedText`, are capped at 200, ranked by recorded PageRank when available (with a kind/radius fallback), weighted by camera distance, and culled for viewport bounds and screen-space collisions. One slot is reserved so the selected node's label is always visible after its lazy detail resolves.
 - Search is a bounded SQLite query. Node detail, metrics, neighbors, evidence, and findings are fetched only for the selected node. The detail panel caps adjacency at 200 edges and rendered cards at 120.
-- Filtering updates buffer attributes; it never creates a DOM or three.js object for each node or edge.
+- Filtering, finding isolation, and diagnostic class emphasis update buffer attributes; they never create a DOM or three.js object for each node or edge.
 
 Folders, files, packages, actors, concepts, actions, data stores, and other kinds differ by point shape and/or radius as well as color. The controls include a shape-and-color legend.
 
@@ -87,4 +105,4 @@ Folders, files, packages, actors, concepts, actions, data stores, and other kind
 - Graph position and edge payloads remain binary SQLite BLOBs throughout. They are never fetched or decoded as JSON.
 - Labels fall back to schema kind/radius priority when PageRank is not recorded; the browser does not compute missing analytics.
 - Direction is shown in the detail panel. The single merged edge batch does not add per-edge arrowhead meshes in this MVP.
-- The minified JavaScript chunk is about 843 kB before gzip (about 229 kB gzip), primarily three.js, postprocessing, and text rendering. The separate SQLite WASM is about 558 kB. Code splitting is a future loading optimization, not a runtime graph-scaling issue.
+- The minified JavaScript chunk is about 862 kB before gzip (about 234 kB gzip), primarily three.js, postprocessing, and text rendering. The separate SQLite WASM is about 558 kB. Code splitting is a future loading optimization, not a runtime graph-scaling issue.
