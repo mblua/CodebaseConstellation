@@ -1,0 +1,32 @@
+{
+  "name": "codebase-constellation-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "playwright test tests/smoke/app.spec.ts",
+    "smoke:real": "playwright test tests/smoke/real-scale.spec.ts",
+    "smoke:all": "playwright test"
+  },
+  "dependencies": {
+    "@fontsource/space-grotesk": "5.2.10",
+    "@fontsource-variable/space-grotesk": "5.2.10",
+    "postprocessing": "6.39.2",
+    "three": "0.185.1",
+    "troika-three-text": "0.52.4",
+    "wa-sqlite": "1.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/node": "26.1.1",
+    "@types/three": "0.185.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.4",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Explore a CodebaseConstellation v1 SQLite architecture graph in WebGL."
+    />
+    <title>Codebase Constellation</title>
+  </head>
+  <body>
+    <div id="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Codebase Constellation home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>
+            <strong>Codebase</strong>
+            <small>CONSTELLATION</small>
+          </span>
+        </a>
+
+        <div class="dataset-source">
+          <span class="status-dot" id="source-status-dot" aria-hidden="true"></span>
+          <span class="dataset-source-copy">
+            <small>DATABASE</small>
+            <strong id="source-label">Loading seed…</strong>
+          </span>
+          <button class="quiet-button" id="open-database" type="button">Open .sqlite</button>
+          <input id="database-file" type="file" accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3" hidden />
+        </div>
+
+        <div class="search-wrap">
+          <label class="search-box" for="node-search">
+            <span aria-hidden="true">⌕</span>
+            <input
+              id="node-search"
+              type="search"
+              autocomplete="off"
+              placeholder="Find a file, symbol, concept…"
+              aria-controls="search-results"
+              aria-expanded="false"
+            />
+            <kbd>/</kbd>
+          </label>
+          <div id="search-results" class="search-results" role="listbox" hidden></div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="control-rail" aria-label="Graph controls">
+          <section class="rail-intro">
+            <p class="eyebrow">ARCHITECTURE MAP</p>
+            <h1 id="repository-name">Opening constellation</h1>
+            <p id="snapshot-meta" class="muted">Validating contract v1…</p>
+            <div id="graph-stats" class="stat-row" aria-live="polite"></div>
+          </section>
+
+          <section class="rail-section">
+            <div class="section-heading">
+              <h2>Layers</h2>
+              <span>Reveal by intent</span>
+            </div>
+            <div id="layer-controls" class="layer-controls"></div>
+          </section>
+
+          <section class="rail-section compact-section">
+            <div class="section-heading">
+              <h2>Selection edges</h2>
+            </div>
+            <label class="select-control">
+              <span class="sr-only">Unrelated edge treatment</span>
+              <select id="relation-mode">
+                <option value="dim" selected>Dim unrelated</option>
+                <option value="hide">Hide unrelated</option>
+                <option value="all">Keep all visible</option>
+              </select>
+            </label>
+          </section>
+
+          <details class="rail-section filter-group" open>
+            <summary>
+              <span>Node kinds</span>
+              <small id="node-filter-summary"></small>
+            </summary>
+            <div id="node-kind-controls" class="check-list"></div>
+          </details>
+
+          <details class="rail-section filter-group">
+            <summary>
+              <span>Edge kinds</span>
+              <small id="edge-filter-summary"></small>
+            </summary>
+            <div id="edge-kind-controls" class="check-list"></div>
+          </details>
+
+          <details class="rail-section filter-group capability-group" open>
+            <summary>
+              <span>Data quality</span>
+              <small>capabilities</small>
+            </summary>
+            <div id="capability-list" class="capability-list"></div>
+          </details>
+
+          <details class="rail-section filter-group legend-group">
+            <summary>
+              <span>Visual legend</span>
+              <small>shape + color</small>
+            </summary>
+            <div id="node-legend" class="node-legend"></div>
+          </details>
+        </aside>
+
+        <section class="viewport" aria-label="3D graph viewport">
+          <div id="canvas-host" class="canvas-host"></div>
+          <div class="viewport-chrome viewport-top-left">
+            <span class="coordinate-chip">3D · RIGHT-HANDED</span>
+            <span id="layout-label" class="layout-label"></span>
+          </div>
+          <div class="viewport-chrome viewport-actions">
+            <button id="fit-view" class="icon-button" type="button" title="Fit visible graph (F)">
+              <span aria-hidden="true">⌗</span><span>Fit</span>
+            </button>
+            <button id="clear-selection" class="icon-button" type="button" title="Clear selection (Esc)" disabled>
+              <span aria-hidden="true">×</span><span>Clear</span>
+            </button>
+          </div>
+          <div class="viewport-help">
+            <span><i class="mouse-icon"></i> drag to orbit</span>
+            <span>scroll to zoom</span>
+            <span>click a node to inspect</span>
+          </div>
+          <div id="loading-panel" class="loading-panel">
+            <div class="loader-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+            <strong id="loading-title">Reading fixtures/seed.sqlite</strong>
+            <span id="loading-detail">Starting wa-sqlite…</span>
+          </div>
+        </section>
+
+        <aside id="detail-panel" class="detail-panel" aria-label="Architecture details" aria-live="polite">
+          <div class="detail-placeholder">
+            <span class="placeholder-glyph" aria-hidden="true">✦</span>
+            <p class="eyebrow">INVESTIGATE</p>
+            <h2>Select a node</h2>
+            <p>Inspect metrics, relationships, evidence, and actionable findings without leaving the graph.</p>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="alert" hidden>
+      <div>
+        <strong id="toast-title">Could not open database</strong>
+        <p id="toast-message"></p>
+      </div>
+      <button id="toast-close" type="button" aria-label="Dismiss error">×</button>
+    </div>
+    <div id="live-status" class="sr-only" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
