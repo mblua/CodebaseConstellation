@@ -1,0 +1,9 @@
+{
+  "productName": "Fixture App",
+  "version": "0.1.0",
+  "identifier": "dev.fixture.app",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "npm run build"
+  }
+}

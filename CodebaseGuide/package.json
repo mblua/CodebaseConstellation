@@ -1,0 +1,32 @@
+{
+  "name": "codebaseguide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local, self-contained map of a repository you can read without reading code.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:core": "npm run test && npm run typecheck",
+    "smoke:adapter": "playwright test --project=adapter",
+    "smoke": "playwright test --project=acceptance",
+    "verify": "npm run test && npm run typecheck && npm run build && npm run smoke:adapter && npm run smoke",
+    "update:screenshots": "playwright test --project=screenshots",
+    "extract": "node tools/extractor/cli.ts",
+    "extract:agentscommander": "node tools/extractor/cli.ts --repo ../../repo-AgentsCommander --name AgentsCommander --out data/agentscommander.json"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.8.3",
+    "vite": "^6.0.7",
+    "vitest": "^4.1.10"
+  }
+}
