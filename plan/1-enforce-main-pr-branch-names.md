@@ -63,12 +63,14 @@ Allowed types are `bug`, `chore`, `ci`, `docs`, `feat`, `feature`, `fix`, `refac
 
 The workflow trigger does not duplicate those exemptions. It ignores only `main`; the validator is the single source of truth and must emit a successful check for every other exempt family so a required-check ruleset cannot deadlock maintenance PRs.
 
+In GitHub Actions the issue API target is derived from `GITHUB_REPOSITORY`, with `mblua/CodebaseConstellation` as the local-command fallback. This preserves canonical issue identity today while allowing a repository rename or transfer to update the CI target automatically. Issue digits remain a string throughout validation so their identity is never changed by JavaScript numeric precision.
+
 ## Invariants and severity
 
 - P1: a direct update to `main`, including by a repository administrator, is rejected.
 - P1: a PR whose head lacks a successful `validate-branch-name` check cannot merge.
 - P1: every same-repository non-`main` push, including an exempt branch, publishes that check or an explicit failing run.
-- P1: the validator checks `mblua/CodebaseConstellation`, never another repository's issues.
+- P1: the validator checks the repository running the GitHub workflow, with `mblua/CodebaseConstellation` as the local fallback, never an unrelated hardcoded issue tracker.
 - P1: missing credentials, API errors, timeouts, inaccessible issues, closed issues, and pull-request numbers fail closed.
 - P1: the ruleset must remain mergeable by the sole collaborator through a compliant PR.
 - P2: branch deletion and non-fast-forward updates to `main` are rejected.

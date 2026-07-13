@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 
 const PATTERN = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9][0-9]*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const MAX_SLUG = 50;
-const TARGET_REPO = 'mblua/CodebaseConstellation';
+const TARGET_REPO = process.env.GITHUB_REPOSITORY || 'mblua/CodebaseConstellation';
 const API_TIMEOUT_MS = 10_000;
 const EXEMPT = [
   /^main$/,
@@ -77,7 +77,7 @@ function validateFormat(branch) {
   if (slug.length > MAX_SLUG) {
     fail(`Slug is ${slug.length} chars (max ${MAX_SLUG}). Shorten it.`);
   }
-  return { issue: Number(issueString), slug };
+  return { issue: issueString, slug };
 }
 
 async function verifyIssueOpen(issue) {
