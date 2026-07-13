@@ -26,6 +26,8 @@ These branch families are exempt because GitHub or the release process manages t
 - GitHub-generated `revert-<pull-request-number>-*`
 - `gh-readonly-queue/*`
 
+These are name-based policy exemptions, not proof of who created the branch. They skip the issue-number and open-issue checks but still require a pull request and the green exemption check. Treat any change to these prefixes, `.github/workflows/validate-branch-name.yml`, or `scripts/validate-branch-name.mjs` as a repository-policy change.
+
 ## Enforcement
 
 The `Validate branch name` GitHub Actions workflow runs on every branch push except `main`. It validates ordinary delivery branches and publishes a successful `exempt` result for the managed branch families above. This ensures that every same-repository pull request can publish the required check. For ordinary branches, it also confirms that the number identifies an open issue rather than a pull request. Its `validate-branch-name` status check is authoritative.

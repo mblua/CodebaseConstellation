@@ -1,6 +1,6 @@
 # Plan #1: enforce PR-only `main` and issue-numbered branches
 
-Status: `DRAFT_ROUND_2_AFTER_CONSTRUCTIVE_DISSENT`
+Status: `READY_FOR_IMPLEMENTATION`
 
 Issue: <https://github.com/mblua/CodebaseConstellation/issues/1>
 
@@ -63,7 +63,7 @@ Allowed types are `bug`, `chore`, `ci`, `docs`, `feat`, `feature`, `fix`, `refac
 
 The workflow trigger does not duplicate those exemptions. It ignores only `main`; the validator is the single source of truth and must emit a successful check for every other exempt family so a required-check ruleset cannot deadlock maintenance PRs.
 
-In GitHub Actions the issue API target is derived from `GITHUB_REPOSITORY`, with `mblua/CodebaseConstellation` as the local-command fallback. This preserves canonical issue identity today while allowing a repository rename or transfer to update the CI target automatically. Issue digits remain a string throughout validation so their identity is never changed by JavaScript numeric precision.
+When `GITHUB_ACTIONS=true`, the issue API target is derived from `GITHUB_REPOSITORY`, with `mblua/CodebaseConstellation` as the local-command fallback. This preserves canonical issue identity today, allows a repository rename or transfer to update the CI target automatically, and prevents an unrelated local environment variable from redirecting an advisory check. Issue digits remain a string throughout validation so their identity is never changed by JavaScript numeric precision.
 
 ## Invariants and severity
 
@@ -148,12 +148,23 @@ Repository-local artifacts can be reverted only through a new issue-backed PR. D
 
 The required workflow and validator live on the candidate branch, as in the AgentsCommander precedent. A future writer could try to weaken them in the same PR. With today's sole owner this does not add a distinct principal, but if write access expands the repository should add required review by an independent maintainer or an organization-level required workflow. This risk is documented rather than disguised by a self-approval requirement.
 
+The exempt prefixes are name-based escape hatches from the issue-number gate: a writer can self-select `hotfix/*`, `release/*`, or another managed family. They do not escape the mandatory PR or required-check path. Any change to the workflow, validator, or exemption list is therefore a repository-policy change and must be reviewed as such.
+
+Issue state is checked when the branch workflow runs. Closing the issue after a green run does not itself trigger a re-run, so a PR may retain a green check for an issue that was open at validation time and closed later. The audit link remains, but open-state freshness is push-triggered rather than continuous.
+
 The push-triggered check is published only for branches in the CodebaseConstellation repository. Pull requests from forks are unsupported in this first slice because their head pushes cannot publish the required base-repository check. External fork support requires a deliberate workflow/ruleset design change; it must not be approximated with an admin bypass.
 
 ## Constructive decision record
 
-- Core lead: supports round 2, including zero approvals/no bypass, broad non-`main` trigger, no grandfather exception, and documented fork limitation.
+- Core lead: `SUPPORT`; round 2 includes zero approvals/no bypass, broad non-`main` trigger, no grandfather exception, canonical CI repository identity, and documented fork limitation.
 - Extraction owner: `SUPPORT`; requested only non-blocking plan clarifications, incorporated in round 2.
-- Graph/runtime owner: `DISSENT` on round 1 because exempt branches could not publish the required check; round-2 fix applied and re-verification pending.
+- Graph/runtime owner: `SUPPORT` on round 2; round-1 dissent about exempt branches was resolved and proven by live hotfix probe run `29224265103`.
 
 Transverse approval requires at least two of the three constructive agents before readiness.
+
+## Independent premortem record
+
+- Semantic red team: `NO_BLOCKING_PREMORTEM_FINDINGS` on round 2. The grandfather bypass, exempt-branch deadlock, revert mismatch, rename/transfer target, and issue-number precision findings were removed or fixed. Final gate requires raw active-ruleset readback and a live invalid-branch PR showing the check blocks merge.
+- Resilience red team: `NO_BLOCKING_PREMORTEM_FINDINGS` on round 2. The exempt-branch P1 and all lower round-1 findings were independently re-verified as resolved. Final gate requires raw active-ruleset readback.
+
+Readiness verdict: `READY_FOR_IMPLEMENTATION`. No P0/P1 finding remains. Remote ruleset activation, PR-only negative evidence, and both executable final gates are still mandatory before merge.
