@@ -1,6 +1,6 @@
 # Plan #1: enforce PR-only `main` and issue-numbered branches
 
-Status: `DRAFT_FOR_CONSTRUCTIVE_AND_PREMORTEM_REVIEW`
+Status: `DRAFT_ROUND_2_AFTER_CONSTRUCTIVE_DISSENT`
 
 Issue: <https://github.com/mblua/CodebaseConstellation/issues/1>
 
@@ -28,10 +28,10 @@ Human intent: apply the AgentsCommander enforcement intent to CodebaseConstellat
 Expected state:
 
 1. Non-exempt delivery branches use `<type>/<open-issue-number>-<lowercase-kebab-slug>`.
-2. A GitHub Actions job named `validate-branch-name` checks format and verifies that the number is an open CodebaseConstellation issue rather than a pull request.
+2. A GitHub Actions job named `validate-branch-name` runs for every same-repository branch push except `main`. It checks ordinary branch format and issue state, while publishing a successful result for explicitly exempt branch families.
 3. An active repository ruleset targets `~DEFAULT_BRANCH`, requires a pull request, requires the strict `validate-branch-name` check, and blocks deletion and non-fast-forward updates.
 4. The ruleset has zero approving reviews and no bypass actors. A solo owner can merge their own PR, but cannot direct-push `main`.
-5. Repository-local documentation explains the policy, exemptions, cutoff, and maintenance constraints.
+5. Repository-local documentation explains the policy, exemptions, enforcement boundary, and maintenance constraints.
 
 ## Decisions and what they trade away
 
@@ -51,26 +51,29 @@ Require `validate-branch-name` only. AgentsCommander's build checks are not defi
 
 Do not add a root JavaScript package solely for local fast feedback. The Actions check is the enforcement boundary. Contributors can run the dependency-free `.mjs` validator manually. This trades away automatic local rejection before a push and avoids a new package/dependency surface unrelated to the product.
 
-### Cutoff at the last pre-enforcement `main`
+### Record the boundary; do not grandfather
 
-Record `b5b272597760c5db2a3bf502f13517e6c5e75eb5`, the synchronized pre-enforcement `main`, as the cutoff. API evidence showed that no other remote branches existed, so there is nothing to grandfather. This avoids a second bootstrap PR while ensuring every future branch from protected `main` contains the cutoff. The tradeoff is deliberate: an undisclosed local branch already based on that exact commit is validated immediately rather than grandfathered.
+Record `b5b272597760c5db2a3bf502f13517e6c5e75eb5`, the synchronized pre-enforcement `main` and repository root commit, as an auditable boundary. API evidence showed that no other remote branches existed, so there is nothing to grandfather. The validator therefore contains no grandfather exception and every delivery branch is checked. This gives up compatibility for an undisclosed pre-enforcement local branch in exchange for a smaller enforcement surface with no arbitrary-name escape path.
 
-Strict required-status-check currency is load-bearing. It prevents a genuinely older branch from remaining grandfathered through merge: the branch must incorporate current `main`, after which validation applies.
+The workflow uses a depth-one checkout because ancestry is no longer evaluated. Strict required-status-check currency remains enabled as defense in depth so every pull request is tested against current `main`.
 
 ### Preserve the current AgentsCommander pattern
 
-Allowed types are `bug`, `chore`, `ci`, `docs`, `feat`, `feature`, `fix`, `refactor`, `style`, and `test`; the issue number has no leading zero; the slug is lowercase kebab-case and at most 50 characters. Exemptions are `main`, `release/**`, `hotfix/**`, `dependabot/**`, `revert/**`, and `gh-readonly-queue/**`.
+Allowed types are `bug`, `chore`, `ci`, `docs`, `feat`, `feature`, `fix`, `refactor`, `style`, and `test`; the issue number has no leading zero; the slug is lowercase kebab-case and at most 50 characters. Exemptions are `main`, `release/**`, `hotfix/**`, `dependabot/**`, `revert/**`, GitHub-generated `revert-<pull-request-number>-*`, and `gh-readonly-queue/**`.
+
+The workflow trigger does not duplicate those exemptions. It ignores only `main`; the validator is the single source of truth and must emit a successful check for every other exempt family so a required-check ruleset cannot deadlock maintenance PRs.
 
 ## Invariants and severity
 
 - P1: a direct update to `main`, including by a repository administrator, is rejected.
 - P1: a PR whose head lacks a successful `validate-branch-name` check cannot merge.
-- P1: strict currency remains enabled so the cutoff cannot become a grandfather bypass.
+- P1: every same-repository non-`main` push, including an exempt branch, publishes that check or an explicit failing run.
 - P1: the validator checks `mblua/CodebaseConstellation`, never another repository's issues.
 - P1: missing credentials, API errors, timeouts, inaccessible issues, closed issues, and pull-request numbers fail closed.
 - P1: the ruleset must remain mergeable by the sole collaborator through a compliant PR.
 - P2: branch deletion and non-fast-forward updates to `main` are rejected.
-- P2: deleting a non-exempt branch does not create a false failing run.
+- P2: strict currency remains enabled so a PR is tested against current `main`.
+- P2: deleting a branch does not create a false failing run.
 - P2: local Windows validation exits cleanly after network checks.
 
 ## Allowed artifacts and systems
@@ -87,6 +90,7 @@ Remote GitHub scope:
 
 - issue #1 and its delivery PR;
 - branch `ci/1-enforce-main-pr-branch-names`;
+- temporary branch `hotfix/enforcement-probe`, used only to prove exempt-check publication and then deleted;
 - one repository ruleset targeting the default branch;
 - issue/PR comments required for the delivery record.
 
@@ -105,28 +109,30 @@ Out of scope:
 3. Run local syntax, whitespace, positive, negative, exempt, issue-API, and Windows process-exit checks.
 4. Push the branch and verify the real GitHub Actions check and GitHub Actions app identity.
 5. Open a PR that closes issue #1.
-6. Create the active ruleset with no bypass actors and these rules: `deletion`, `non_fast_forward`, `pull_request` with zero approvals, and strict `required_status_checks` containing only `validate-branch-name` from GitHub Actions.
+6. Create the active ruleset with no bypass actors and these rules: `deletion`, `non_fast_forward`, `pull_request` with zero approvals and allowed merge methods `merge`, `squash`, and `rebase`, and strict `required_status_checks` containing only `validate-branch-name` from GitHub Actions.
 7. Read the ruleset back from the API and compare every relevant field to this plan.
 8. Obtain both independent final adversarial verdicts and resolve every P0/P1 finding.
 9. Verify `origin/main` is an ancestor of the branch, required CI is green, and merge through the PR.
-10. Synchronize local `main`, remove the merged branch safely, re-read the active ruleset, and exercise post-merge negative cases for closed issue and pull-request number.
+10. Synchronize local `main`, remove the merged branch safely, re-read the active ruleset, and exercise post-merge negative cases for closed issue and pull-request number. Both cases must exit 1 promptly, not merely eventually.
 
 ## Verification matrix
 
 Local validator:
 
-- pass: current compliant branch, explicit compliant branch, `main`, and each exempt prefix;
+- pass: current compliant branch, explicit compliant branch, `main`, each exempt prefix, and GitHub's `revert-<pull-request-number>-*` shape;
 - fail: unknown type, leading-zero issue, uppercase/underscore/double-dash slug, slug over 50 characters;
 - pass with API: open issue #1;
 - fail with API: missing issue, closed issue, and pull-request number;
 - fail closed: missing token and unreachable/failed API;
-- no Windows libuv assertion after a successful API fetch.
+- no Windows libuv assertion after a successful API fetch;
+- closed-issue and pull-request responses terminate promptly with exit 1 after the fetch completes.
 
 GitHub:
 
 - workflow parses and publishes `validate-branch-name` on the delivery commit;
+- a temporary `hotfix/enforcement-probe` push publishes a successful `exempt` check, then branch deletion produces no false failure;
 - check run uses the GitHub Actions app (`integration_id` 15368 or the observed equivalent);
-- ruleset readback has `enforcement: active`, `~DEFAULT_BRANCH`, no bypass actors, zero approvals, strict required check, deletion rule, and non-fast-forward rule;
+- ruleset readback has `enforcement: active`, `~DEFAULT_BRANCH`, no bypass actors, zero approvals, all three explicitly allowed merge methods, strict required check, deletion rule, and non-fast-forward rule;
 - PR merge succeeds without direct-push or admin bypass;
 - post-merge `main == origin/main` and the ruleset remains active.
 
@@ -140,10 +146,12 @@ Repository-local artifacts can be reverted only through a new issue-backed PR. D
 
 The required workflow and validator live on the candidate branch, as in the AgentsCommander precedent. A future writer could try to weaken them in the same PR. With today's sole owner this does not add a distinct principal, but if write access expands the repository should add required review by an independent maintainer or an organization-level required workflow. This risk is documented rather than disguised by a self-approval requirement.
 
+The push-triggered check is published only for branches in the CodebaseConstellation repository. Pull requests from forks are unsupported in this first slice because their head pushes cannot publish the required base-repository check. External fork support requires a deliberate workflow/ruleset design change; it must not be approximated with an admin bypass.
+
 ## Constructive decision record
 
-- Core lead: supports this draft, including zero approvals/no bypass and the pre-enforcement cutoff, pending both other constructive reviews.
-- Extraction owner: pending.
-- Graph/runtime owner: pending.
+- Core lead: supports round 2, including zero approvals/no bypass, broad non-`main` trigger, no grandfather exception, and documented fork limitation.
+- Extraction owner: `SUPPORT`; requested only non-blocking plan clarifications, incorporated in round 2.
+- Graph/runtime owner: `DISSENT` on round 1 because exempt branches could not publish the required check; round-2 fix applied and re-verification pending.
 
 Transverse approval requires at least two of the three constructive agents before readiness.

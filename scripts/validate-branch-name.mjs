@@ -7,7 +7,7 @@
 //   node scripts/validate-branch-name.mjs                  (auto-detects current branch)
 //
 // Exit codes:
-//   0 -> valid, exempt, or grandfathered
+//   0 -> valid or exempt
 //   1 -> invalid format, slug too long, issue missing/closed, timeout, or internal error
 
 import { execFileSync } from 'node:child_process';
@@ -15,15 +15,14 @@ import { execFileSync } from 'node:child_process';
 const PATTERN = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9][0-9]*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const MAX_SLUG = 50;
 const TARGET_REPO = 'mblua/CodebaseConstellation';
-const CUTOFF_SHA_PATH = '.github/branch-name-enforcement.cutoff.sha';
 const API_TIMEOUT_MS = 10_000;
-const SHA_RE = /^[0-9a-fA-F]{40}$/;
 const EXEMPT = [
   /^main$/,
   /^release\//,
   /^hotfix\//,
   /^dependabot\//,
   /^revert\//,
+  /^revert-[1-9][0-9]*-/,
   /^gh-readonly-queue\//,
 ];
 
@@ -49,15 +48,6 @@ function git(args) {
   }).trim();
 }
 
-function gitOk(args) {
-  try {
-    execFileSync('git', args, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function resolveBranch() {
   if (process.env.GITHUB_REF_NAME) return process.env.GITHUB_REF_NAME;
   try {
@@ -69,27 +59,6 @@ function resolveBranch() {
 
 function isExempt(branch) {
   return EXEMPT.some((pattern) => pattern.test(branch));
-}
-
-function readCutoffSha() {
-  let content;
-  try {
-    content = git(['show', `origin/main:${CUTOFF_SHA_PATH}`]);
-  } catch {
-    return null;
-  }
-  const first = content.split('\n', 1)[0].trim();
-  if (!SHA_RE.test(first)) return null;
-  return first.toLowerCase();
-}
-
-function isGrandfathered(branch) {
-  const cutoff = readCutoffSha();
-  if (!cutoff) return false;
-  if (!gitOk(['rev-parse', '--verify', `${cutoff}^{commit}`])) return false;
-  if (!gitOk(['rev-parse', '--verify', branch])) return false;
-  if (gitOk(['merge-base', '--is-ancestor', cutoff, branch])) return false;
-  return true;
 }
 
 function validateFormat(branch) {
@@ -163,11 +132,6 @@ async function verifyIssueOpen(issue) {
       console.log(`[branch-name] exempt: ${branch}`);
       return;
     }
-    if (isGrandfathered(branch)) {
-      console.log(`[branch-name] grandfathered (cut before enforcement): ${branch}`);
-      return;
-    }
-
     const { issue } = validateFormat(branch);
     if (args.checkIssue) await verifyIssueOpen(issue);
 

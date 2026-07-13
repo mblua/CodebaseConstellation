@@ -4,11 +4,6 @@ on:
   push:
     branches-ignore:
       - main
-      - 'release/**'
-      - 'hotfix/**'
-      - 'dependabot/**'
-      - 'revert/**'
-      - 'gh-readonly-queue/**'
 
 permissions:
   contents: read
@@ -25,10 +20,10 @@ jobs:
     if: github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (full history for grandfather ancestor check)
+      - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
