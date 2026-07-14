@@ -915,3 +915,33 @@ Follow-up verification:
 Canonical screenshots were not regenerated because this correction changes only controller timer lifetime and unit coverage; it has no rendered UI, geometry, copy, or canonical fixture effect.
 
 Follow-up verdict: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`. Core and both independent executable red-team gates remain pending. No push, PR, merge, boundary expansion, or gate-final status is claimed.
+
+## Final-gate Preview/recovery ownership correction
+
+The resilience final executable gate against evidence HEAD `09ab2401218e6f786c9aaf99398c5a77a60deb65` returned `FAIL_P0_P1` for one independently reproduced blocker: `RES-EXEC-P1-01`. While underlying current document B owned `pendingAutosave`, opening older export A in Preview left all three recovery controls executable. Export combined A's raw document with B's recovery view; Restore applied B's view to A and consumed the candidate; Keep also consumed B's candidate from the wrong owner.
+
+Corrective implementation commit `d4edae7da28b4310101aebb39f143d2fbf9490e3` (`fix(visual-specs): preserve recovery ownership in preview (#7)`) closes that ownership crossing with defense in depth:
+
+- the UI keeps the truthful simultaneous `Preview` and `Recovery available` statuses and the compact recovery disclosure, but hides the executable `Restore view`, `Keep current`, and `Export autosave copy` group while Preview is active;
+- `exportAutosaveCopy()`, `restoreAutosaveView()`, and `keepCurrentView()` all require the current project recovery owner before reading, exporting, mutating, consuming, invalidating operations, or scheduling autosave; Preview receives the explicit existing Return-first error;
+- `returnToProject()` continues to reinstall the underlying project's `currentText` and preserved in-memory view without changing its recovery candidate, after which the same three actions operate on B normally.
+
+Controller regressions cover editable and read-only projects with distinct raw owner markers (`PREVIEW-EXPORT-A` and `UNDERLYING-CURRENT-B`) plus B recovery viewport `{ x: 77, y: 88, zoom: 1.7 }`. Direct invocation of all three guarded methods in Preview leaves the exact ProjectController snapshot, raw reference, view reference, pending candidate, export count, autosave count, write stages, and backups unchanged. After Return, export contains B's marker and B's recovery view; editable uses the project ref and read-only uses the null-ref save fallback.
+
+Real-browser regressions cover both access modes through physical project creation/export, external valid B revision, matching recovery, Open, optional trusted Enable editing, and Preview of A. They prove both status labels remain visible; the compact indication remains available; all three executable controls are hidden and cannot receive focus. Programmatic clicks on the hidden controls exercise the controller boundary and produce zero filesystem writes, project exports, or Save Picker calls while preserving Preview raw/view, underlying disk state, safety facts, and the candidate. After a physical Return, a trusted physical recovery export writes exactly one B-owned artifact: editable adds exactly one `.visual-specs/exports` file and zero Save Picker calls; read-only leaves project exports unchanged and makes exactly one Save Picker call with activation `true`. Physical Restore and Keep then resolve the retained candidate only against returned document B.
+
+Final-gate corrective verification:
+
+- `npm run typecheck`: PASS.
+- `npm test -- --run tests/app/projectController.test.ts`: PASS, 83/83.
+- `npx playwright test tests/smoke/projectUi.spec.ts --project=acceptance --grep "Preview defers"`: PASS, 2/2.
+- `npm run verify`: PASS — 20 unit-test files / 320 tests, typecheck, production build, adapter 7/7, acceptance 34/34.
+- corrective build: 39 modules; `main.js` 1,391.19 kB / 97.12 kB gzip and `main.css` 11.58 kB / 3.11 kB gzip.
+- production `main.js` SHA-256: `DB7A576B46E23A106073296E9430AC0C42151ED0C7EA7AC9A63AF7243FC2EDE0`; `__visualSpecs`, `projectActions`, `projectActionAttempts`, and the browser-only trusted-click probe are absent.
+- DPR 1: 12 samples, p50 `28.9 ms`, p95/worst `30.3 ms`, 22 rapid toggles, zero page errors.
+- DPR 2: 12 samples, p50 `31.1 ms`, p95/worst `32.9 ms`, 22 rapid toggles, zero page errors.
+- `git diff --check`: PASS; strict port 5175 confirmed free after Playwright.
+
+Canonical screenshots were not regenerated. The four canonical captures use the Example/no-project session; this correction changes visibility only in the simultaneous project Preview + recovery state, which is exercised by the new real-browser fixtures. It does not change canonical chrome, geometry, copy, or canvas rendering.
+
+Residual risk within `RES-EXEC-P1-01`: none identified. Independent core verification and fresh semantic plus resilience executable gates remain mandatory, so the artifact status remains `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`; no final-gate pass is declared. No push, PR, merge, schema change, persistence-identity change, general Preview change, or boundary expansion was performed.
