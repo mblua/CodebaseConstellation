@@ -1,6 +1,6 @@
 # Plan #7: add a collapsible Project Rail
 
-Status: `DRAFT_CORE_ARBITRATION_APPLIED`
+Status: `IMPLEMENTATION_IN_PROGRESS`
 
 Issue: <https://github.com/mblua/CodebaseConstellation/issues/7>
 
@@ -807,6 +807,8 @@ Resilience's plan-level clear does not remove its residual executable-gate condi
 - `RES-P2-4` retains trusted activation/call counts for every listed picker/permission/compact action and injected cancel/denial/revocation/conflict/throw paths.
 - `RES-P2-5` retains Escape tests from first, textbox-or-select, and last controls in each overlay, ending at the exact visible opener across breakpoints.
 
-Binding core disposition: the identity P1 is valid, accepted, and closed in the RFC by arbitration; it is not accepted risk and not a waiver. This plan now awaits an exact conformance inspection by the core lead. Core conformance may produce a separate implementation-readiness decision; it does not itself replace either red team's independent final executable gate.
+Binding core disposition: the identity P1 is valid, accepted, and closed in the RFC by arbitration; it is not accepted risk and not a waiver. Neither the binding plan closure nor implementation readiness replaces either red team's independent final executable gate.
 
-Readiness verdict: `AWAITING_CORE_CONFORMANCE`. No production implementation is authorized by this revision.
+Core-conformance record: the core lead inspected exact plan commit `c2f45f893c03df6f456240362c22ae38ee977312`, including its one-file diff, tracked status, UTF-16 escape/atom identity closure, session-kind discard deduplication, explicit `1663px` evidence flow, report dispositions, and retained executable gates. The decision `Issue #7 — READY_FOR_IMPLEMENTATION` issued on 2026-07-14 authorizes this artifact owner to implement the approved RFC on `feature/7-collapsible-project-rail` within the allowed artifact list and no-change boundaries. It does not authorize push, PR, merge, boundary expansion, or gate-final status.
+
+Readiness verdict: `READY_FOR_IMPLEMENTATION`. Implementation is in progress; core review and both independent executable red-team gates remain required before completion.
