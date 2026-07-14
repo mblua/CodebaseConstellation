@@ -33,6 +33,7 @@ import {
   deriveProjectPresentation,
   discardConfirmationCopy,
   escapeManifestProjectId,
+  restoreConfirmationCopy,
 } from '../../src/ui/app.ts';
 import { docText, node, sampleDoc } from '../support/doc.ts';
 
@@ -428,6 +429,18 @@ describe('Project Rail application presentation facts', () => {
         'open another project',
       ),
     ).toBeNull();
+  });
+
+  it('composes dirty Restore loss and backup semantics into one confirmation', () => {
+    const copy = restoreConfirmationCopy(
+      stateForPresentation({ dirty: true, projectDirty: true, hasDiscardableChanges: true }),
+      'copy.json',
+    );
+    expect(copy).toMatch(/open project has unsaved layout or view changes/i);
+    expect(copy.match(/open project/giu)).toHaveLength(1);
+    expect(copy.match(/unsaved/giu)).toHaveLength(1);
+    expect(copy.match(/backed up/giu)).toHaveLength(1);
+    expect(copy.match(/Continue\?/gu)).toHaveLength(1);
   });
 
   it.each([
@@ -1015,6 +1028,94 @@ describe('backup and stored-document invariants', () => {
 });
 
 describe('autosave, export and permissions', () => {
+  it('re-arms dirty autosave after a successful non-session foreground operation', async () => {
+    vi.useFakeTimers();
+    const { controller, project, store } = boot();
+    await project.createProject('Fake Project');
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 8, y: 9, zoom: 1.3 } });
+
+    await project.exportJson();
+    expect(project.snapshot()).toMatchObject({ dirty: true, lifecycleBusy: false });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(store.autosaveWrites).toBe(1);
+  });
+
+  it('re-arms dirty autosave after a foreground cancellation or failure preserves the session', async () => {
+    vi.useFakeTimers();
+    const { controller, project, store } = boot();
+    await project.createProject('Fake Project');
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 10, y: 11, zoom: 1.4 } });
+    store.exportPortable = async () => {
+      throw new DOMException('cancelled', 'AbortError');
+    };
+
+    await expect(project.exportJson()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(project.snapshot()).toMatchObject({ dirty: true, lifecycleBusy: false });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(store.autosaveWrites).toBe(1);
+  });
+
+  it('does not emit a spurious autosave after Save or a committed session change', async () => {
+    vi.useFakeTimers();
+    const first = boot();
+    await first.project.createProject('Fake Project');
+    first.controller.dispatch({ type: 'SetViewport', viewport: { x: 12, y: 13, zoom: 1.5 } });
+    await first.project.saveCurrent();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(first.project.snapshot().dirty).toBe(false);
+    expect(first.store.autosaveWrites).toBe(0);
+
+    const second = boot();
+    await second.project.createProject('Project A');
+    second.controller.dispatch({ type: 'SetViewport', viewport: { x: 14, y: 15, zoom: 1.6 } });
+    second.store.snapshot = projectSnapshot(
+      second.store,
+      'project-b',
+      'Project B',
+      changedDoc(),
+      'readwrite',
+    );
+    await second.project.openProject();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(second.project.snapshot()).toMatchObject({ manifestProjectId: 'project-b', dirty: false });
+    expect(second.store.autosaveWrites).toBe(0);
+  });
+
+  it('does not re-arm autosave after a foreground permission revocation', async () => {
+    vi.useFakeTimers();
+    const { controller, project, store } = boot();
+    await project.createProject('Fake Project');
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 16, y: 17, zoom: 1.7 } });
+    store.denyMethod = 'export';
+
+    await expect(project.exportJson()).rejects.toMatchObject({ name: 'NotAllowedError' });
+    expect(project.snapshot()).toMatchObject({ access: 'readonly', dirty: true });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(store.autosaveWrites).toBe(0);
+  });
+
+  it('does not let a stale foreground completion re-arm autosave in a changed session', async () => {
+    vi.useFakeTimers();
+    const { controller, project, store } = boot();
+    await project.createProject('Project A');
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 18, y: 19, zoom: 1.8 } });
+    const exported = deferred<ExportResult>();
+    store.exportPortable = async () => exported.promise;
+
+    const exporting = project.exportJson();
+    store.snapshot = projectSnapshot(store, 'project-b', 'Project B', changedDoc(), 'readwrite');
+    await project.openProject();
+    exported.resolve({ fileName: 'stale.json', mode: 'project-export' });
+    await exporting;
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(project.snapshot()).toMatchObject({ manifestProjectId: 'project-b', dirty: false });
+    expect(store.autosaveWrites).toBe(0);
+  });
+
   it('exports a matching autosave copy outside a read-only project through the save fallback', async () => {
     const store = new FakeProjectStore();
     const revision = computeDocRevision(store.snapshot.currentText);

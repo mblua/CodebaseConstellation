@@ -29,6 +29,7 @@ export interface AppUi {
 const WIDE_MIN_WIDTH = 1664;
 const HYBRID_MIN_WIDTH = 1200;
 const ZOOM_STEP = 1.25;
+const PROJECT_ID_COLUMNS_PER_LINE = 24;
 
 type LayoutBand = 'wide' | 'hybrid' | 'narrow';
 type Surface = 'project' | 'sidebar' | 'detail';
@@ -145,6 +146,20 @@ export function discardConfirmationCopy(
   return named + ' and will be lost if you ' + action + '. Continue?';
 }
 
+export function restoreConfirmationCopy(
+  state: ProjectControllerState,
+  fileName: string,
+): string {
+  const loss = discardConfirmationCopy(state, 'restore ' + fileName + ' as current');
+  if (loss === null) {
+    return 'Restore ' + fileName + ' as current? The current file will be backed up first.';
+  }
+  return (
+    loss.replace(/ Continue\?$/u, '') +
+    ' The current file will be backed up first. Continue?'
+  );
+}
+
 /**
  * The read-only browser test hooks exist in dev and test builds ONLY.
  *
@@ -188,7 +203,11 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   let sidebarPreference: 'open' | 'closed' = 'open';
   let detailPreference: 'open' | 'closed' = 'open';
   let activeOverlay: Surface | null = null;
-  let overlayOpener: HTMLElement | null = null;
+  const overlayOpeners: Record<Surface, HTMLElement | null> = {
+    project: null,
+    sidebar: null,
+    detail: null,
+  };
   let sidebarOpen = false;
   let detailOpen = false;
   let projectOpen = false;
@@ -278,7 +297,9 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       if (band !== 'narrow') detailPreference = open ? 'open' : 'closed';
       if (band === 'narrow') activeOverlay = open ? 'detail' : null;
     }
-    if (open && band !== 'wide') overlayOpener = opener;
+    // Only the surface that actually becomes the active overlay owns this opener.
+    // Docked Details/Explorer toggles must not overwrite an open Project overlay.
+    if (open && band !== 'wide' && activeOverlay === which) overlayOpeners[which] = opener;
     applyLayout();
     if (open) {
       scheduleFocus(() =>
@@ -295,7 +316,8 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
               : detailPanel,
       );
     } else {
-      const destination = opener.isConnected && !opener.hidden ? opener : overlayOpener;
+      const destination =
+        opener.isConnected && !opener.hidden ? opener : overlayOpeners[which];
       scheduleFocus(() => destination);
     }
   }
@@ -481,6 +503,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     importJson(): void {
       const ref = importRefs[importSelect.selectedIndex];
       if (ref !== undefined) {
+        if (!confirmDestructive('import ' + ref.fileName + ' as current')) return;
         void runProjectAction('Import JSON', () => projectController.importStoredDoc(ref));
       }
     },
@@ -496,31 +519,25 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     restoreExport(): void {
       const ref = exportRefs[exportSelect.selectedIndex];
       if (ref === undefined) return;
-      if (
-        !globalThis.confirm(
-          'Restore ' +
-            ref.fileName +
-            ' as current? The current file will be backed up first.',
-        )
-      ) {
-        return;
-      }
+      if (!globalThis.confirm(restoreConfirmationCopy(currentProjectState, ref.fileName))) return;
       void runProjectAction('Restore from export', () =>
         projectController.restoreStoredExport(ref),
       );
     },
     returnToProject(): void {
-      projectController.returnToProject();
+      void runProjectAction('Return to project', () => projectController.returnToProject());
     },
     openTemporary(): void {
       if (!confirmDestructive('open a temporary JSON document')) return;
       fileInput.click();
     },
     restoreAutosave(): void {
-      projectController.restoreAutosaveView();
+      void runProjectAction('Restore autosave view', () =>
+        projectController.restoreAutosaveView(),
+      );
     },
     keepAutosave(): void {
-      projectController.keepCurrentView();
+      void runProjectAction('Keep current view', () => projectController.keepCurrentView());
     },
     exportAutosave(): void {
       void runProjectAction('Export autosave copy', () =>
@@ -795,6 +812,10 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   }
 
   let actionEpoch = 0;
+  const projectActionAttempts: Record<string, number> = Object.create(null) as Record<
+    string,
+    number
+  >;
 
   function clearActionError(): void {
     actionErrorHost.textContent = '';
@@ -815,9 +836,12 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
 
   async function runProjectAction(
     label: string,
-    action: () => Promise<void>,
+    action: () => void | Promise<void>,
     successStatus?: string,
   ): Promise<void> {
+    if (IS_TEST_BUILD) {
+      projectActionAttempts[label] = (projectActionAttempts[label] ?? 0) + 1;
+    }
     const epoch = ++actionEpoch;
     try {
       await action();
@@ -866,6 +890,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
         },
       }),
       project: () => projectController.snapshot(),
+      projectActions: () => ({ ...projectActionAttempts }),
       layout: () => ({
         band: currentBand,
         projectPreference,
@@ -891,7 +916,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       e.preventDefault();
       const closing = activeOverlay;
       const opener =
-        overlayOpener ??
+        overlayOpeners[closing] ??
         (closing === 'project'
           ? projectShow
           : closing === 'sidebar'
@@ -966,12 +991,16 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
             : activeOverlay === 'project' && projectPreference === 'expanded'
               ? 'project'
               : null;
+        if (activeOverlay === 'project') overlayOpeners.project = projectShow;
       } else if (focused instanceof Node && projectRail.contains(focused)) {
         activeOverlay = currentProjectState.manifestProjectId === null ? null : 'project';
+        if (activeOverlay === 'project') overlayOpeners.project = projectShow;
       } else if (focused instanceof Node && sidebar.contains(focused)) {
         activeOverlay = 'sidebar';
+        overlayOpeners.sidebar = sidebarToggle;
       } else if (focused instanceof Node && detailPanel.contains(focused)) {
         activeOverlay = 'detail';
+        overlayOpeners.detail = detailToggle;
       } else {
         activeOverlay = null;
       }
@@ -1320,24 +1349,26 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
 
   function renderEscapedAtoms(host: HTMLElement, atoms: readonly string[]): void {
     clear(host);
-    let literalRun = '';
-    const flushLiteralRun = (): void => {
-      if (literalRun === '') return;
-      // Every character in this run is itself one literal ASCII atom, so browser
-      // wrapping at any character boundary remains atom-safe without creating one
-      // DOM node per code unit for a maximum-length identifier.
-      host.appendChild(el('span', { class: 'project-id-literal' }, [literalRun]));
-      literalRun = '';
-    };
+    // Newlines are presentation-only line boxes inserted strictly BETWEEN escape
+    // atoms. One text node keeps DOM work bounded at the contract maximum; no atom
+    // is sliced, the rail cannot overflow horizontally, and the associated hidden
+    // accessible label retains the exact separator-free escaped identity.
+    const lines: string[] = [];
+    let line = '';
+    let columns = 0;
     for (const atom of atoms) {
-      if (atom.length === 1) {
-        literalRun += atom;
-      } else {
-        flushLiteralRun();
-        host.appendChild(el('span', { class: 'project-id-atom' }, [atom]));
+      if (columns > 0 && columns + atom.length > PROJECT_ID_COLUMNS_PER_LINE) {
+        lines.push(line);
+        line = '';
+        columns = 0;
       }
+      line += atom;
+      columns += atom.length;
     }
-    flushLiteralRun();
+    if (line !== '') lines.push(line);
+    host.dataset['atomCount'] = String(atoms.length);
+    host.dataset['lineCount'] = String(lines.length);
+    host.textContent = lines.join('\n');
   }
 
   function patchStoredSelect(
@@ -1442,7 +1473,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       projectPreference = 'expanded';
       if (layoutBand() !== 'wide') {
         activeOverlay = 'project';
-        overlayOpener = projectShow;
+        overlayOpeners.project = projectShow;
       }
     } else if (!hasProject && activeOverlay === 'project') {
       activeOverlay = null;

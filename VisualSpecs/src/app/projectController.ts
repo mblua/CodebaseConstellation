@@ -914,38 +914,35 @@ export class ProjectController {
     });
   }
 
-  private scheduleAutosave(): void {
+  private scheduleAutosave(resumeGuard?: OperationGuard): void {
     this.cancelAutosave();
-    const project = this.project;
-    if (
-      project === null ||
-      this.lifecycleBusy ||
-      project.access !== 'readwrite' ||
-      project.needsRepair ||
-      this.previewReturn !== null ||
-      this.controller.state.readOnly
-    ) {
-      return;
-    }
+    if (!this.autosaveIsSafe(resumeGuard)) return;
+    const guard = this.captureOperationGuard();
     this.autosaveTimer = setTimeout(() => {
       this.autosaveTimer = null;
-      void this.flushAutosave();
+      void this.flushAutosave(guard);
     }, 350);
   }
 
-  private async flushAutosave(): Promise<void> {
+  private autosaveIsSafe(guard?: OperationGuard): boolean {
     const project = this.project;
-    if (
-      project === null ||
-      this.lifecycleBusy ||
-      project.access !== 'readwrite' ||
-      project.needsRepair ||
-      this.previewReturn !== null ||
-      this.controller.state.readOnly
-    ) {
+    return (
+      this.dirty &&
+      project !== null &&
+      !this.lifecycleBusy &&
+      project.access === 'readwrite' &&
+      !project.needsRepair &&
+      this.previewReturn === null &&
+      !this.controller.state.readOnly &&
+      (guard === undefined || this.operationIsCurrent(guard, true))
+    );
+  }
+
+  private async flushAutosave(guard: OperationGuard): Promise<void> {
+    const project = this.project;
+    if (project === null || !this.autosaveIsSafe(guard)) {
       return;
     }
-    const guard = this.captureOperationGuard();
     const view = toVisualSpecsView(this.controller.state.view);
     const text = autosaveViewText({
       schema: 'visual-specs.autosave-view',
@@ -1068,7 +1065,8 @@ export class ProjectController {
   private beginOperation(): OperationGuard {
     // A foreground lifecycle/write action owns the next completion. A pending
     // background autosave is cancelled; an already-started one is still fenced by
-    // its captured session token in flushAutosave().
+    // its captured session token in flushAutosave(). The winning close re-arms
+    // recovery only when this same dirty session remains autosave-safe.
     this.cancelAutosave();
     this.operationEpoch += 1;
     const guard = this.captureOperationGuard();
@@ -1120,6 +1118,7 @@ export class ProjectController {
     if (!this.operationIsCurrent(guard, requireSameSession)) return false;
     install();
     this.lifecycleBusy = false;
+    this.scheduleAutosave(guard);
     this.notify();
     return true;
   }
@@ -1127,6 +1126,7 @@ export class ProjectController {
   private settleOperation(guard: OperationGuard): void {
     if (guard.epoch !== this.operationEpoch || !this.lifecycleBusy) return;
     this.lifecycleBusy = false;
+    this.scheduleAutosave(guard);
     this.notify();
   }
 

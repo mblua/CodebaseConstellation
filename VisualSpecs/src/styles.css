@@ -314,19 +314,10 @@ summary:focus-visible {
 }
 
 .project-id-full {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-}
-
-.project-id-atom {
-  white-space: nowrap;
-}
-
-.project-id-literal {
-  min-width: 0;
-  max-width: 100%;
-  overflow-wrap: anywhere;
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .project-states {

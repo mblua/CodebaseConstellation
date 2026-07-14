@@ -1,5 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
+import type { ProjectControllerState } from '../../src/app/projectController.ts';
 import { routeEdges, type RenderScene } from '../../src/ports/renderer.ts';
 import { sampleDoc } from '../support/doc.ts';
 
@@ -112,7 +113,14 @@ test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export
     expect(await harnessValue<boolean[]>(page, 'openActivations')).toEqual([true]);
     await page.getByRole('button', { name: 'Refresh imports', exact: true }).click();
     await expect(page.getByLabel('Project imports').locator('option')).toHaveCount(1);
+    let importConfirm = '';
+    page.once('dialog', (dialog) => {
+      importConfirm = dialog.message();
+      void dialog.accept();
+    });
     await page.getByRole('button', { name: 'Import JSON', exact: true }).click();
+    expect(importConfirm).toMatch(/open project has unsaved layout or view changes/i);
+    expect(importConfirm.match(/open project/giu)).toHaveLength(1);
     await expect(page.locator('.project-message')).toContainText('Imported');
     disk = await readDisk(page, rootName);
     expect(disk.backups).toHaveLength(1);
@@ -190,6 +198,159 @@ test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export
   }
 });
 
+test('dirty Import and Restore share one discard authority and commit only after acceptance', async ({ page }) => {
+  const rootName = await installHarness(page);
+  try {
+    await boot(page);
+    const name = page.getByLabel('Project name');
+    await name.fill('Guarded Project');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await setHarness(page, { externalName: 'guarded-import.json', externalText: changedDoc() });
+    await page.getByRole('button', { name: 'Add JSON', exact: true }).click();
+    await page.getByRole('button', { name: 'Refresh imports', exact: true }).click();
+    await page.locator('#export-btn').click();
+    await expect.poll(async () => (await readDisk(page, rootName)).exports.length).toBe(1);
+    await page.getByRole('button', { name: 'Refresh exports', exact: true }).click();
+
+    const importButton = page.getByRole('button', { name: 'Import JSON', exact: true });
+    await name.fill('');
+    await page.getByRole('button', { name: 'Rename', exact: true }).click();
+    await expect(page.locator('.action-error')).toContainText('Rename project failed');
+    await name.fill('Guarded Project');
+    await page.locator('#zoom-in').click();
+    const importStateBefore = await readProjectState(page);
+    const importInteractionBefore = await readProjectInteraction(page);
+    const importErrorBefore = await page.locator('.action-error').textContent();
+    const importDiskBefore = await readDisk(page, rootName);
+    const importFile = importDiskBefore.imports[0];
+    expect(importFile).toBeDefined();
+    const importActionsBefore = await readProjectActions(page);
+    const importReadsBefore = await harnessValue<string[]>(page, 'fileReads');
+    const importWritesBefore = await harnessValue<string[]>(page, 'fileWrites');
+    let importCancelCopy = '';
+    page.once('dialog', (dialog) => {
+      importCancelCopy = dialog.message();
+      void dialog.dismiss();
+    });
+
+    await importButton.click();
+
+    expect(importCancelCopy).toMatch(/open project has unsaved layout or view changes/i);
+    expect(importCancelCopy.match(/open project/giu)).toHaveLength(1);
+    expect(importCancelCopy.match(/unsaved/giu)).toHaveLength(1);
+    expect((await readProjectActions(page))['Import JSON'] ?? 0).toBe(
+      importActionsBefore['Import JSON'] ?? 0,
+    );
+    expect(countNamed(await harnessValue<string[]>(page, 'fileReads'), importFile ?? '')).toBe(
+      countNamed(importReadsBefore, importFile ?? ''),
+    );
+    expect(commitWriteCounts(await harnessValue<string[]>(page, 'fileWrites'))).toEqual(
+      commitWriteCounts(importWritesBefore),
+    );
+    expect(projectSafetyState(await readProjectState(page))).toEqual(
+      projectSafetyState(importStateBefore),
+    );
+    expect(await readProjectInteraction(page)).toEqual(importInteractionBefore);
+    await expect(page.locator('.action-error')).toHaveText(importErrorBefore ?? '');
+    await expect(importButton).toBeFocused();
+    expect(await readDisk(page, rootName)).toEqual(importDiskBefore);
+
+    const importAcceptActions = await readProjectActions(page);
+    const importAcceptWrites = await harnessValue<string[]>(page, 'fileWrites');
+    let importAcceptCopy = '';
+    page.once('dialog', (dialog) => {
+      importAcceptCopy = dialog.message();
+      void dialog.accept();
+    });
+    await importButton.click();
+    await expect(page.locator('.project-message')).toContainText('Imported');
+    expect(importAcceptCopy).toBe(importCancelCopy);
+    expect((await readProjectActions(page))['Import JSON']).toBe(
+      (importAcceptActions['Import JSON'] ?? 0) + 1,
+    );
+    const importCommittedWrites = commitWriteCounts(
+      await harnessValue<string[]>(page, 'fileWrites'),
+    );
+    const importBaselineWrites = commitWriteCounts(importAcceptWrites);
+    expect(importCommittedWrites).toEqual({
+      current: importBaselineWrites.current + 1,
+      manifest: importBaselineWrites.manifest + 1,
+      backup: importBaselineWrites.backup + 1,
+    });
+    const afterImport = await readDisk(page, rootName);
+    expect(afterImport.backups).toHaveLength(importDiskBefore.backups.length + 1);
+    expect(JSON.parse(afterImport.currentText)).toMatchObject({ uiImported: true });
+
+    await page.locator('#zoom-in').click();
+    await name.fill('');
+    await page.getByRole('button', { name: 'Rename', exact: true }).click();
+    await expect(page.locator('.action-error')).toContainText('Rename project failed');
+    await name.fill('Guarded Project');
+    const restoreButton = page.getByRole('button', { name: 'Restore from export', exact: true });
+    const restoreStateBefore = await readProjectState(page);
+    const restoreInteractionBefore = await readProjectInteraction(page);
+    const restoreErrorBefore = await page.locator('.action-error').textContent();
+    const restoreDiskBefore = await readDisk(page, rootName);
+    const exportFile = restoreDiskBefore.exports[0];
+    expect(exportFile).toBeDefined();
+    const restoreActionsBefore = await readProjectActions(page);
+    const restoreReadsBefore = await harnessValue<string[]>(page, 'fileReads');
+    const restoreWritesBefore = await harnessValue<string[]>(page, 'fileWrites');
+    let restoreCancelCopy = '';
+    page.once('dialog', (dialog) => {
+      restoreCancelCopy = dialog.message();
+      void dialog.dismiss();
+    });
+
+    await restoreButton.click();
+
+    expect(restoreCancelCopy).toMatch(/open project has unsaved layout or view changes/i);
+    expect(restoreCancelCopy.match(/open project/giu)).toHaveLength(1);
+    expect(restoreCancelCopy.match(/unsaved/giu)).toHaveLength(1);
+    expect(restoreCancelCopy.match(/backed up/giu)).toHaveLength(1);
+    expect(restoreCancelCopy.match(/Continue\?/gu)).toHaveLength(1);
+    expect((await readProjectActions(page))['Restore from export'] ?? 0).toBe(
+      restoreActionsBefore['Restore from export'] ?? 0,
+    );
+    expect(countNamed(await harnessValue<string[]>(page, 'fileReads'), exportFile ?? '')).toBe(
+      countNamed(restoreReadsBefore, exportFile ?? ''),
+    );
+    expect(commitWriteCounts(await harnessValue<string[]>(page, 'fileWrites'))).toEqual(
+      commitWriteCounts(restoreWritesBefore),
+    );
+    expect(projectSafetyState(await readProjectState(page))).toEqual(
+      projectSafetyState(restoreStateBefore),
+    );
+    expect(await readProjectInteraction(page)).toEqual(restoreInteractionBefore);
+    await expect(page.locator('.action-error')).toHaveText(restoreErrorBefore ?? '');
+    await expect(restoreButton).toBeFocused();
+    expect(await readDisk(page, rootName)).toEqual(restoreDiskBefore);
+
+    const restoreAcceptActions = await readProjectActions(page);
+    const restoreAcceptWrites = await harnessValue<string[]>(page, 'fileWrites');
+    page.once('dialog', (dialog) => void dialog.accept());
+    await restoreButton.click();
+    await expect(page.locator('.project-message')).toContainText('Restored');
+    expect((await readProjectActions(page))['Restore from export']).toBe(
+      (restoreAcceptActions['Restore from export'] ?? 0) + 1,
+    );
+    const restoreCommittedWrites = commitWriteCounts(
+      await harnessValue<string[]>(page, 'fileWrites'),
+    );
+    const restoreBaselineWrites = commitWriteCounts(restoreAcceptWrites);
+    expect(restoreCommittedWrites).toEqual({
+      current: restoreBaselineWrites.current + 1,
+      manifest: restoreBaselineWrites.manifest + 1,
+      backup: restoreBaselineWrites.backup + 1,
+    });
+    expect((await readDisk(page, rootName)).backups).toHaveLength(
+      restoreDiskBefore.backups.length + 1,
+    );
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
 test('autosave recovery uses Save Picker for editable readonly projects and hides every export for requires[] readonly docs', async ({ page }) => {
   const rootName = await installHarness(page);
   try {
@@ -261,6 +422,47 @@ test('autosave recovery uses Save Picker for editable readonly projects and hide
   }
 });
 
+test('Return, Restore autosave, and Keep current successes clear the prior action error', async ({ page }) => {
+  const rootName = await installHarness(page);
+  try {
+    await boot(page);
+    await page.getByLabel('Project name').fill('Direct success');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await page.locator('#export-btn').click();
+    await expect.poll(async () => (await readDisk(page, rootName)).exports.length).toBe(1);
+    await page.getByRole('button', { name: 'Refresh exports', exact: true }).click();
+    await page.getByRole('button', { name: 'Open export copy', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Return to project', exact: true })).toBeVisible();
+
+    await injectInvalidTemporary(page);
+    await expect(page.locator('.action-error')).toContainText('Open temporary JSON failed');
+    await page.getByRole('button', { name: 'Return to project', exact: true }).click();
+    await expect(page.locator('.action-error')).toBeHidden();
+
+    await writeMatchingAutosave(page, rootName);
+    await page.reload();
+    await waitForBoot(page);
+    await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Restore view', exact: true })).toBeVisible();
+    await injectInvalidTemporary(page);
+    await expect(page.locator('.action-error')).toContainText('Open temporary JSON failed');
+    await page.getByRole('button', { name: 'Restore view', exact: true }).click();
+    await expect(page.locator('.action-error')).toBeHidden();
+
+    await writeMatchingAutosave(page, rootName);
+    await page.reload();
+    await waitForBoot(page);
+    await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Keep current', exact: true })).toBeVisible();
+    await injectInvalidTemporary(page);
+    await expect(page.locator('.action-error')).toContainText('Open temporary JSON failed');
+    await page.getByRole('button', { name: 'Keep current', exact: true }).click();
+    await expect(page.locator('.action-error')).toBeHidden();
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
 test('unsupported project persistence advertises and uses the true download fallback', async ({ page }) => {
   const rootName = await installHarness(page, { directory: false, save: false, open: false });
   try {
@@ -318,7 +520,7 @@ test('Project Rail is distinct, collapsible, atomic in focus, and keeps stable f
     await expect(page.locator('.project-identity')).toHaveAccessibleName(
       `Project Stable Project. Project ID ${escapedId}.`,
     );
-    await expect(page.locator('.project-id-full')).toHaveText(escapedId);
+    expect(await displayedProjectId(page)).toBe(escapedId);
     await expect(page.locator('.project-states')).toContainText('Project access: editable');
 
     const expandedCanvas = await page.locator('.canvas-host canvas').boundingBox();
@@ -469,7 +671,7 @@ test('hostile manifest ids stay exact, inert, accessible, and collision-visible'
       await page.getByRole('button', { name: 'Open Project', exact: true }).click();
       await expect.poll(() => currentManifestId(page)).toBe(rawId);
       const escaped = escapeForPresentation(rawId);
-      await expect(page.locator('.project-id-full')).toHaveText(escaped);
+      expect(await displayedProjectId(page)).toBe(escaped);
       await expect(page.locator('.project-identity')).toHaveAccessibleName(
         `Project Same Project. Project ID ${escaped}.`,
       );
@@ -515,11 +717,70 @@ test('hostile manifest ids stay exact, inert, accessible, and collision-visible'
     await page.getByRole('button', { name: 'Show project rail', exact: true }).click();
     expect(await readManifestText(page, rootName)).toBe(persistedBeforePresentation);
 
-    const maximumId = 'M'.repeat(100_000);
+    const maximumId = String.fromCharCode(0x200b).repeat(100_000);
     await rewriteManifestIdentity(page, rootName, maximumId, 'Same Project');
+    const hostileStartedAt = await page.evaluate(() => performance.now());
     await page.getByRole('button', { name: 'Open Project', exact: true }).click();
-    await expect.poll(() => currentManifestId(page)).toBe(maximumId);
-    expect(await page.locator('.project-id-full').evaluate((element) => element.textContent?.length)).toBe(100_000);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+            project(): { manifestProjectId: string | null };
+          };
+          const id = hooks.project().manifestProjectId;
+          return { length: id?.length ?? -1, first: id?.charCodeAt(0) ?? -1 };
+        }),
+      )
+      .toEqual({ length: 100_000, first: 0x200b });
+    const hostileElapsedMs = await page.evaluate(
+      (startedAt) =>
+        new Promise<number>((resolve) => {
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => resolve(performance.now() - startedAt)),
+          );
+        }),
+      hostileStartedAt,
+    );
+    expect(hostileElapsedMs).toBeLessThan(2_000);
+    const hostileDom = await page.locator('.project-id-full').evaluate((element) => {
+      const text = element.textContent ?? '';
+      const lines = text.split('\n');
+      const normalized = lines.join('');
+      return {
+        textLength: text.length,
+        normalizedLength: normalized.length,
+        childCount: element.childElementCount,
+        atomCount: Number((element as HTMLElement).dataset['atomCount'] ?? '0'),
+        lineCount: Number((element as HTMLElement).dataset['lineCount'] ?? '0'),
+        actualLineCount: lines.length,
+        maxLineLength: Math.max(0, ...lines.map((line) => line.length)),
+        atomSafeLines: lines.every((line) => /^(?:\\u[0-9A-F]{4}){1,4}$/u.test(line)),
+        first: normalized.slice(0, 12),
+        last: normalized.slice(-12),
+      };
+    });
+    expect(hostileDom).toEqual({
+      textLength: 624_999,
+      normalizedLength: 600_000,
+      childCount: 0,
+      atomCount: 100_000,
+      lineCount: 25_000,
+      actualLineCount: 25_000,
+      maxLineLength: 24,
+      atomSafeLines: true,
+      first: '\\u200B\\u200B',
+      last: '\\u200B\\u200B',
+    });
+    const hostileA11y = await page.locator('#project-identity-expanded-label').evaluate((element) => ({
+      length: element.textContent?.length ?? -1,
+      startsCorrectly: element.textContent?.startsWith('Project Same Project. Project ID \\u200B') ?? false,
+      endsCorrectly: element.textContent?.endsWith('\\u200B.') ?? false,
+    }));
+    expect(hostileA11y).toEqual({
+      length: 'Project Same Project. Project ID '.length + 600_000 + 1,
+      startsCorrectly: true,
+      endsCorrectly: true,
+    });
     const containment = await page.locator('#project-rail').evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
@@ -852,6 +1113,23 @@ test('Hybrid Project overlay preserves a real selected edge and docked Details e
     expect(await isElementTopmostAtCenter(page, '.banner.coverage')).toBe(true);
     await captureReviewEvidence(page, testInfo, 'project-rail-hybrid-1663-explorer-suppressed');
 
+    await page.locator('#toggle-detail').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      activeOverlay: 'project',
+      projectOpen: true,
+      detailOpen: false,
+    });
+    await page.locator('#toggle-detail').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      activeOverlay: 'project',
+      projectOpen: true,
+      detailPreference: 'open',
+      detailOpen: true,
+    });
+    expect(await readProjectInteraction(page)).toEqual(baseline.interaction);
+    expect(await page.locator('.detail .confidence').allTextContents()).toEqual(baseline.confidence);
+    expect(await page.locator('.detail .evidence code').allTextContents()).toEqual(baseline.evidence);
+
     await page.getByLabel('Project name').focus();
     await page.keyboard.press('Escape');
     await expect(page.locator('#show-project-rail')).toBeFocused();
@@ -873,6 +1151,51 @@ test('Hybrid Project overlay preserves a real selected edge and docked Details e
     if (afterRoute === undefined) throw new Error('selected edge route disappeared');
     await clickProjectWorld(page, afterRoute.mid, afterScene.viewport);
     expect((await readProjectInteraction(page)).selection.edgeId).toBe(edge.id);
+
+    // A Narrow Details opener must not leak through Wide into the next Hybrid
+    // Project overlay. The breakpoint transition binds Project's replacement
+    // opener explicitly before Escape can consume it.
+    await page.setViewportSize({ width: 1199, height: 900 });
+    await waitForLayoutPaint(page);
+    await page.locator('#toggle-detail').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'narrow',
+      activeOverlay: 'detail',
+      detailOpen: true,
+    });
+    await page.setViewportSize({ width: 1664, height: 900 });
+    await waitForLayoutPaint(page);
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'wide',
+      activeOverlay: null,
+      projectOpen: false,
+      sidebarOpen: true,
+      detailOpen: true,
+    });
+    await page.locator('#show-project-rail').click();
+    await page.setViewportSize({ width: 1663, height: 900 });
+    await waitForLayoutPaint(page);
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'hybrid',
+      activeOverlay: 'project',
+      projectOpen: true,
+      sidebarOpen: false,
+      detailOpen: true,
+    });
+    await page.getByLabel('Project name').focus();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#show-project-rail')).toBeFocused();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      activeOverlay: null,
+      projectOpen: false,
+      sidebarPreference: 'open',
+      sidebarOpen: true,
+      detailPreference: 'open',
+      detailOpen: true,
+    });
+    expect(await readProjectInteraction(page)).toEqual(baseline.interaction);
+    expect(await page.locator('.detail .confidence').allTextContents()).toEqual(baseline.confidence);
+    expect(await page.locator('.detail .evidence code').allTextContents()).toEqual(baseline.evidence);
   } finally {
     await cleanup(page, rootName);
   }
@@ -1034,11 +1357,27 @@ async function installHarness(page: Page, options: HarnessOptions = {}): Promise
         saveActivations: [] as boolean[],
         openCalls: 0,
         openActivations: [] as boolean[],
+        fileReads: [] as string[],
+        fileWrites: [] as string[],
         cancelNextDirectory: false,
         externalName: 'incoming.json',
         externalText: '{"formatVersion":"1.0","nodes":[],"edges":[]}',
       };
       globals['__projectUiHarness'] = harness;
+
+      const originalGetFile = FileSystemFileHandle.prototype.getFile;
+      FileSystemFileHandle.prototype.getFile = function (this: FileSystemFileHandle): Promise<File> {
+        harness.fileReads.push(this.name);
+        return originalGetFile.call(this);
+      };
+      const originalCreateWritable = FileSystemFileHandle.prototype.createWritable;
+      FileSystemFileHandle.prototype.createWritable = function (
+        this: FileSystemFileHandle,
+        options?: FileSystemCreateWritableOptions,
+      ): Promise<FileSystemWritableFileStream> {
+        harness.fileWrites.push(this.name);
+        return originalCreateWritable.call(this, options);
+      };
 
       if (directory) {
         globals['showDirectoryPicker'] = async () => {
@@ -1103,6 +1442,14 @@ async function boot(page: Page): Promise<void> {
 async function waitForBoot(page: Page): Promise<void> {
   await page.waitForSelector('.canvas-host canvas');
   await page.waitForFunction(() => '__visualSpecs' in globalThis);
+}
+
+async function injectInvalidTemporary(page: Page): Promise<void> {
+  await page.locator('#import-input').setInputFiles({
+    name: 'invalid.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{not json', 'utf8'),
+  });
 }
 
 async function setHarness(page: Page, values: Record<string, unknown>): Promise<void> {
@@ -1301,6 +1648,63 @@ async function currentManifestId(page: Page): Promise<string | null> {
       project(): { manifestProjectId: string | null };
     };
     return hooks.project().manifestProjectId;
+  });
+}
+
+async function displayedProjectId(page: Page): Promise<string> {
+  return page.locator('.project-id-full').evaluate((element) =>
+    (element.textContent ?? '').replaceAll('\n', ''),
+  );
+}
+
+function countNamed(values: readonly string[], name: string): number {
+  return values.filter((value) => value === name).length;
+}
+
+function commitWriteCounts(values: readonly string[]): {
+  current: number;
+  manifest: number;
+  backup: number;
+} {
+  return {
+    current: countNamed(values, 'current.json'),
+    manifest: countNamed(values, 'project.json'),
+    backup: values.filter((value) => /_current(?:-\d+)?\.json$/u.test(value)).length,
+  };
+}
+
+function projectSafetyState(state: ProjectControllerState): Record<string, unknown> {
+  return {
+    sessionKind: state.sessionKind,
+    manifestProjectId: state.manifestProjectId,
+    projectKey: state.projectKey,
+    access: state.access,
+    dirty: state.dirty,
+    projectDirty: state.projectDirty,
+    hasDiscardableChanges: state.hasDiscardableChanges,
+    previewing: state.previewing,
+    needsRepair: state.needsRepair,
+    pendingAutosave: state.pendingAutosave,
+    corruptAutosaveIgnored: state.corruptAutosaveIgnored,
+    lifecycleBusy: state.lifecycleBusy,
+  };
+}
+
+async function readProjectState(page: Page): Promise<ProjectControllerState> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      project(): ProjectControllerState;
+    };
+    return hooks.project();
+  });
+}
+
+async function readProjectActions(page: Page): Promise<Record<string, number>> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      projectActions(): Record<string, number>;
+    };
+    return hooks.projectActions();
   });
 }
 
