@@ -893,3 +893,25 @@ Return, Restore autosave, and Keep current now enter the same `runProjectAction(
 Canonical screenshots were not regenerated: all four canonical captures depict the initial Example/no-project session and contain neither a manifest project identifier nor a native confirmation dialog. The corrective visual change is limited to long/hostile project-id line breaking and is covered by the noncanonical maximum hostile browser fixture; shell geometry, canvas, banners, and canonical chrome are unchanged.
 
 Corrective verdict: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`. Core and both independent executable red-team gates remain pending. No push, PR, merge, boundary expansion, or gate-final status is claimed.
+
+## Core executable corrective follow-up
+
+Core reviewed exact evidence commit `96f3e05c08c4d1e06270cc5e916128d4458f1bb2` and retained `FAIL_P0_P1` for one independently reproduced continuation of the autosave lifetime defect: `CORE-EXEC-P1-01B`. A dirty writable session with matching recovery data scheduled an autosave, but `keepCurrentView()` invalidated that timer's operation epoch while clearing the recovery candidate and did not install a fresh timer. The stale callback correctly emitted zero writes, leaving the current dirty view without a recovery write.
+
+Corrective implementation commit `1dcebfa8249355aecafa3bfdd7be30dc4f6a666e` (`fix(visual-specs): rearm autosave after keep current (#7)`) closes that case through the existing centralized safety boundary. `keepCurrentView()` first invalidates the old operation epoch and clears the candidate, then calls `scheduleAutosave()`. That method cancels any prior timer, evaluates `autosaveIsSafe()` against the resulting session, and captures a fresh operation/session guard. It therefore re-arms only a dirty, writable, non-busy, non-repair, non-Preview, semantically writable current session; clean, read-only, revoked, changed-session, and stale states remain at zero writes.
+
+The focused regression reproduces matching recovery -> enable editing -> viewport dirty -> Keep current -> 400 ms and asserts exactly one autosave write. Companion negative evidence performs Keep current in a clean writable session and a dirty read-only session and asserts zero writes for both. Existing ProjectController coverage continues to exercise permission revocation, stale foreground completion, Save, and committed session changes.
+
+Follow-up verification:
+
+- `npm run typecheck`: PASS.
+- `npm test -- --run tests/app/projectController.test.ts`: PASS, 81/81.
+- `npm run verify`: PASS — 20 unit-test files / 318 tests, typecheck, production build, adapter 7/7, acceptance 32/32.
+- follow-up build: 39 modules; `main.js` 1,390.97 kB / 97.08 kB gzip and `main.css` 11.58 kB / 3.11 kB gzip.
+- DPR 1: 12 samples, p50 `29.2 ms`, p95/worst `30.9 ms`, 22 rapid toggles, zero page errors.
+- DPR 2: 12 samples, p50 `31.9 ms`, p95/worst `34.2 ms`, 22 rapid toggles, zero page errors.
+- `git diff --check`: PASS; strict port 5175 confirmed free after Playwright.
+
+Canonical screenshots were not regenerated because this correction changes only controller timer lifetime and unit coverage; it has no rendered UI, geometry, copy, or canonical fixture effect.
+
+Follow-up verdict: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`. Core and both independent executable red-team gates remain pending. No push, PR, merge, boundary expansion, or gate-final status is claimed.
