@@ -849,3 +849,47 @@ Executed gates:
 - strict Playwright/Vite port 5175: confirmed free after the gates; `strictPort` and `reuseExistingServer: false` remain unchanged.
 
 Implementation verdict: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`. Core final review and both independent executable red-team gates remain mandatory. No push, PR, merge, boundary expansion, or gate-final status is claimed.
+
+## Core executable corrective round
+
+Core independently verified the original implementation increment through `f9b96370357f22c7b9c661483f354c8312417c12`, then issued `FAIL_P0_P1` on 2026-07-14 with three reproducible P1s. Corrective implementation commit `d15f57bbe1e6abe0e40c20998a000fdbf52e5fd4` (`fix(visual-specs): close project rail core gate violations (#7)`) closes those cases without changing an approved boundary.
+
+### `CORE-EXEC-P1-01` — foreground actions cancelled dirty autosave
+
+`scheduleAutosave()` now owns one explicit `autosaveIsSafe()` predicate. It rejects clean, no-project, busy, preview, read-only-access, repair, semantically read-only, changed-session, stale-operation, and permission-revoked states. A scheduled timer captures its operation/session guard before delay; the winning `completeOperation()` or `settleOperation()` re-arms only if the same dirty writable session remains current. Save/import/restore and session-changing successes clear dirty or invalidate the guard and therefore emit no spurious recovery write.
+
+The core's failing-before reproduction observed zero writes after dirty → successful Export → 400 ms. Passing-after unit evidence now covers successful Export, cancellation/failure, Save, committed session change, foreground permission revocation, and a stale Export completion after a newer Open. The focused ProjectController run passes 79/79 tests.
+
+### `CORE-EXEC-P1-02` — Import and Restore bypassed discard authority
+
+Import synchronously calls `confirmDestructive()` before entering `runProjectAction()` or reading the selected ref. Restore uses one `restoreConfirmationCopy()` prompt that composes the same authoritative ordinary-project/Preview loss copy with the existing mandatory-backup semantics. There is never a second or backup-only dirty prompt.
+
+The browser regression establishes a prior action error and a dirty project, then cancels and accepts both operations. Cancellation records zero UI action admission, zero selected stored-file reads, zero current/manifest/backup writes, identical session/access/dirty/recovery/selection/view state, the exact prior action error, and focus on the initiating button. Acceptance records exactly one handler admission plus exactly one current write, manifest write, and backup, and verifies the ordinary-project loss is named once.
+
+### `CORE-EXEC-P1-03` — docked Details overwrote Project's opener
+
+Opener identity is now stored per surface and is updated only when that surface actually becomes `activeOverlay`. Docked Explorer/Details toggles cannot mutate Project's opener. Every resize transition that promotes a surface to an overlay installs its exact visible replacement opener.
+
+The `1663px` regression opens Project, closes/reopens docked Details, focuses inside Project, and presses Escape. It proves focus returns to `#show-project-rail`, Project closes, Details preference/presentation remains open, Explorer restores from its retained preference, and selection/confidence/ordered evidence stay identical. A second flow leaves a Narrow Details opener in history, crosses Wide, re-enters Hybrid with Project, and proves Escape still returns to Project's opener with the same evidence invariants.
+
+### Non-blocking hardening dispositions
+
+Maximum hostile identity no longer creates one element per escaped atom. The expanded renderer inserts presentation-only newlines strictly between formatter atoms and installs the complete value in one text node; the associated hidden accessible label remains the exact separator-free escape. The combined fixture uses 100,000 `U+200B` code units (600,000 escaped characters), asserts 25,000 atom-safe lines of at most 24 columns, zero child elements, exact raw/accessibility endpoints, no horizontal rail overflow, and two-animation-frame responsiveness under 2,000 ms.
+
+Return, Restore autosave, and Keep current now enter the same `runProjectAction()` success lifetime as asynchronous actions. A browser regression creates a prior action error independently before each direct success and proves the winning success clears it. Test-only action counters remain eliminated from the production bundle (`projectActions`, `projectActionAttempts`, and `__visualSpecs` are absent from `dist`).
+
+### Corrective verification
+
+- `npm run typecheck`: PASS.
+- `npm test -- --run tests/app/projectController.test.ts`: PASS, 79/79.
+- `npx playwright test tests/smoke/projectUi.spec.ts --project=acceptance`: PASS, 12/12.
+- hostile maximum focused browser run: PASS, 1/1.
+- `npm run verify`: PASS — 20 unit-test files / 316 tests, typecheck, production build, adapter 7/7, acceptance 32/32.
+- corrective build: 39 modules; `main.js` 1,390.94 kB / 97.07 kB gzip and `main.css` 11.58 kB / 3.11 kB gzip.
+- DPR 1: 12 samples, p50 `29.1 ms`, p95/worst `30.6 ms`, 22 rapid toggles, zero page errors.
+- DPR 2: 12 samples, p50 `31.1 ms`, p95/worst `33.0 ms`, 22 rapid toggles, zero page errors.
+- `git diff --check`: PASS; strict port 5175 confirmed free after Playwright.
+
+Canonical screenshots were not regenerated: all four canonical captures depict the initial Example/no-project session and contain neither a manifest project identifier nor a native confirmation dialog. The corrective visual change is limited to long/hostile project-id line breaking and is covered by the noncanonical maximum hostile browser fixture; shell geometry, canvas, banners, and canonical chrome are unchanged.
+
+Corrective verdict: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`. Core and both independent executable red-team gates remain pending. No push, PR, merge, boundary expansion, or gate-final status is claimed.
