@@ -973,3 +973,33 @@ Exact-opener corrective verification:
 Canonical screenshots were not regenerated. The correction affects focus ownership only after compact Recovery opens a Preview/recovery overlay; the canonical Example/no-project captures have no such state and no visual pixels, copy, geometry, or canvas rendering changed.
 
 Residual risk within `SEM-REGATE-P1-01`: none identified. Independent core verification and fresh semantic plus resilience executable gates remain mandatory, so the artifact remains `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`; no final-gate pass is declared. No push, PR, merge, boundary expansion, or unrelated mutation was performed.
+
+## Round-3 core arbitration — opener preservation across breakpoints
+
+The third and final semantic review against evidence HEAD `95c53fc35a14b195cb3931ba5ee3a50885fb1f4e` confirmed that stationary Hybrid/Narrow compact-Recovery focus was closed, then returned one valid continuation: `SEM-REGATE-P1-01B`. With Project opened through compact Recovery, live `1663 -> 1199` and `1199 -> 1200` transitions retained the Project overlay but unconditionally replaced its surviving compact opener with generic Show Project. Escape therefore lost the exact recovery-specific return context.
+
+The three-round review limit was reached. Core explicitly arbitrated this continuation and authorized a bounded correction without a fourth adversarial loop: preserve the recorded Project opener across Hybrid <-> Narrow when the same overlay remains active and the opener can still serve after close. Install generic Show Project only for automatic promotion from Wide/docked state or when the recorded opener is absent, disconnected, self-hidden, disabled/capability-invalid, outside the corresponding compact context, or otherwise cannot become visible after Project closes. Escape must always receive a stable visible fallback. The accepted tradeoff relinquishes the former unconditional normalization to one generic Project opener; it introduces no new state and does not change the responsive preference/overlay table.
+
+Corrective implementation commit `7f95725fcedef7eb8fd840cb38fc647696a6ca3f` (`fix(visual-specs): preserve overlay opener across breakpoints (#7)`) implements one shared Project opener-validity and fallback path. A surviving compact opener may be temporarily hidden only by the compact container while Project is open; self-hidden/disabled/disconnected or non-corresponding descendants are rejected. Retained Hybrid/Narrow Project overlays preserve a valid ledger entry. Automatic Wide promotion explicitly installs generic Show Project. Escape and explicit Project close resolve the same validated post-close target, with generic Show Project as the stable fallback. Sidebar, Details, recovery ownership, statuses, action visibility, and project/session semantics are unchanged.
+
+The editable Preview/recovery browser fixture now composes the exact arbitrated sequences while retaining the fixed-band checks:
+
+- Hybrid `1663` compact Recovery -> open Project -> resize Narrow `1199` -> Escape;
+- Narrow `1199` compact Recovery -> open Project -> resize Hybrid `1200` -> Escape.
+
+Both retain the same mounted compact Recovery node, keep Project as the sole active overlay during resize, keep focus inside Project while open, then close to that exact visible node. Generic Show Project is not focused; no overlay remains; focus is neither body nor a hidden subtree; raw document, viewport, project safety facts, and the underlying recovery candidate remain exact. A negative then self-hides the recorded compact opener while Project is open and proves Escape falls back to visible generic Show Project rather than body or the hidden node. The read-only fixture retains the stationary Narrow round trip, and the full suite retains stationary Hybrid, generic Show Project, Wide automatic promotion, breakpoint replacement, Preview/recovery ownership, and responsive stress coverage.
+
+Arbitration corrective verification:
+
+- `npm run typecheck`: PASS.
+- `npx playwright test tests/smoke/projectUi.spec.ts --project=acceptance --grep "Preview defers"`: PASS, 2/2.
+- `npm run verify`: PASS — 20 unit-test files / 320 tests, typecheck, production build, adapter 7/7, acceptance 34/34.
+- corrective build: 39 modules; `main.js` 1,391.61 kB / 97.27 kB gzip and `main.css` 11.58 kB / 3.11 kB gzip.
+- production `main.js` SHA-256: `8784213CF531495F1384341E06F62B023B100AA045A637D17FF43F78C0811541`; production hook/action-counter/browser-probe markers are absent.
+- DPR 1: 12 samples, p50 `29.8 ms`, p95/worst `30.9 ms`, 22 rapid toggles, zero page errors.
+- DPR 2: 12 samples, p50 `31.5 ms`, p95/worst `34.3 ms`, 22 rapid toggles, zero page errors.
+- `git diff --check`: PASS; strict port 5175 confirmed free after Playwright.
+
+Canonical screenshots were not regenerated. The correction changes only runtime focus-ledger selection during an open-overlay breakpoint transition; canonical Example/no-project pixels, copy, geometry, and canvas rendering are unchanged, and the exact state is covered in real-browser tests.
+
+Arbitration exit decision: `IMPLEMENTATION_READY_FOR_CORE_FINAL_ARBITRATION`. No fourth semantic review is requested. Residual risk within `SEM-REGATE-P1-01B`: none identified. Core still owns independent reproduction, the final full gate, processing the outstanding round-3 resilience report, and the documented landing decision. No push, PR, merge, boundary expansion, or unrelated mutation was performed.
