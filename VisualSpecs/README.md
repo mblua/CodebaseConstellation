@@ -52,7 +52,7 @@ npm run verify   # vitest + tsc --noEmit + vite build + BOTH browser smokes
 | `npm run typecheck` | `tsc --noEmit`, strict, `noUncheckedIndexedAccess`, `erasableSyntaxOnly`. |
 | `npm run verify:core` | The two above. The fast inner loop; no browser needed. |
 | `npm run smoke:adapter` | The shared renderer conformance suite against the **real** Canvas2DRenderer in a **real** browser, with **real** pointer events. Needs no dataset. |
-| `npm run smoke` | The acceptance smoke: the whole product against the **real committed dataset**, at 1680×1000, 1024×768 and 800×800. |
+| `npm run smoke` | The acceptance smoke: the whole product against the **real committed dataset**, including 1664/1200 responsive boundaries, 1680×1000, 1024×768, 800×800 and DPR 1/2. |
 | `npm run verify` | test → typecheck → build → **adapter smoke** → **acceptance smoke**. **This is the gate.** |
 | `npm run update:screenshots` | Regenerates the canonical captures in `docs/screenshots/`. **Deliberately not part of `verify`** — a gate that rewrites the documentation it is checking cannot fail cleanly. |
 
@@ -136,6 +136,15 @@ value, not an absence.
 
 ### Projects and persistence
 
+Project lifecycle has its own named **Project Rail**, separate from the graph **Explorer**.
+Before a project exists it identifies the bundled `Example: AgentsCommander` session and
+keeps Create/Open plus temporary-document actions before the map controls. After Create/Open,
+the rail shows the project name, the complete canonical `project.id` as an inert injective
+ASCII escape, access/document/dirty/repair/preview/recovery facts, and only the actions valid
+for that state. It can then collapse to a compact context that retains an accessible full
+identity, a collision-aware visible id token, state, and the one critical action. The
+preference is mounted UI state only: it is not written into the document or project.
+
 **Create Project** asks the browser for write access to a directory and creates:
 
 ```text
@@ -176,17 +185,34 @@ backup contains the bytes actually read from disk immediately beforehand and clo
 validated current safely read-only and offers an explicit, permission-gated **Repair project**;
 there is no silent adoption or overwrite.
 
+Session-changing and project-writing actions are serialized in the UI and fenced by operation
+and session epochs in the application layer. Every ref and serialized payload is captured before
+its first asynchronous picker/read/write. Open/Create candidates validate all of their files and
+stored-document lists while the old complete session remains visible, then install document,
+project head, exact manifest identity, access, dirty/recovery facts and capabilities in one
+synchronous aggregate commit. A stale completion cannot mix identities, clear a newer busy/error
+state, or write a later document through an earlier project ref.
+
 Unsupported browsers or insecure contexts do not get project persistence. They can still
 open a JSON temporarily and export through Save Picker/download fallback, but the UI never claims
 that `.visual-specs` was written.
 
 ### It fits in a window
 
-The two side panels are **drawers**. Above 1200px they are docked and open. Below it they
-float over the canvas and start closed, so the map keeps essentially the whole width — and
-they are one keystroke or one button away. (A 290px explorer plus a 380px detail panel in
-an 800px window left the map 130px of canvas: a strip of pixels in which nothing could be
-read, selected or believed.)
+Project, Explorer and Details have independent desktop preferences and three measured
+presentations:
+
+* at `>=1664px`, the 192px Project Rail, 290px Explorer and 380px Details panel can all dock;
+  collapsing Project reclaims its complete width without changing the map viewport;
+* at `1200..1663px`, Project is a 232px left overlay. While open it suppresses only Explorer's
+  presentation (not its preference), and Details remains docked;
+* below `1200px`, Project, Explorer and Details share one exclusive overlay over a full-width
+  canvas. With no project, Create/Open stays inline before the map instead of covering it.
+
+Focus moves to the exact opener before a surface is hidden, Escape closes one active overlay even
+from a form control, and global map shortcuts do not run from inputs, selects, buttons, links,
+contenteditable or equivalent ARIA widgets. Chrome reflow is coalesced into the next painted
+frame; it does not Fit, Reset, re-project the graph, or change selection/evidence.
 
 ### What the map says about AgentsCommander
 

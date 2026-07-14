@@ -620,7 +620,9 @@ for (const size of [
       // Wide: the panels are docked and open, exactly as before.
       await expect(page.locator('.sidebar')).toBeVisible();
       await expect(page.locator('.detail-panel')).toBeVisible();
-      expect(canvas.width).toBeGreaterThan(900);
+      // The selected 192px Project Rail is now a fourth wide-screen column.
+      // 1680 - 192 Project - 290 Explorer - 380 Details = 818 nominal canvas.
+      expect(canvas.width).toBeGreaterThanOrEqual(800);
     } else {
       // Narrow: the panels float, so the map keeps essentially the whole window.
       // 130px of canvas — what the fixed 290px + 380px columns left at 800px — is not

@@ -1,0 +1,19 @@
+.gitattributes text eol=lf
+
+# WG4 evidence is immutable source material. Keep reports readable and line-ending
+# stable, preserve raw logs/binaries byte-for-byte, and do not make deliberate
+# historical whitespace fail the product diff gate.
+VisualSpecs/docs/evidence/** -whitespace
+VisualSpecs/docs/evidence/**/*.md text eol=lf
+VisualSpecs/docs/evidence/**/*.json text eol=lf
+VisualSpecs/docs/evidence/**/*.ts text eol=lf
+VisualSpecs/docs/evidence/**/*.mjs text eol=lf
+VisualSpecs/docs/evidence/**/*.sh text eol=lf
+VisualSpecs/docs/evidence/**/*.txt text eol=lf
+VisualSpecs/docs/evidence/**/*.log -text
+VisualSpecs/docs/evidence/**/*.png -text
+VisualSpecs/docs/evidence/**/*.bundle -text
+
+# The selected Issue #7 prototypes are part of the same preservation archive.
+VisualSpecs/docs/prototypes/issue-7/**/*.html text eol=lf
+VisualSpecs/docs/prototypes/issue-7/**/*.png -text

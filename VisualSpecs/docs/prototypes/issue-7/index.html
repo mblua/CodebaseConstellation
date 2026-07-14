@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Visual Specs — Prototipos de layout</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", system-ui, sans-serif;
+      background: #080b12;
+      color: #dbe3f0;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: #080b12; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 14px 20px;
+      border-bottom: 1px solid #232a3a;
+      background: rgb(8 11 18 / 94%);
+      backdrop-filter: blur(12px);
+    }
+    h1 { margin: 0; font-size: 18px; }
+    nav { display: flex; gap: 8px; flex-wrap: wrap; }
+    nav a {
+      padding: 7px 12px;
+      border: 1px solid #33406a;
+      border-radius: 7px;
+      color: #dbe3f0;
+      text-decoration: none;
+      background: #151c2b;
+    }
+    nav a:hover { border-color: #7aa2f7; background: #1d2740; }
+    main { width: min(1800px, 100%); margin: 0 auto; padding: 24px; }
+    figure {
+      margin: 0 0 52px;
+      scroll-margin-top: 82px;
+    }
+    figcaption {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin: 0 0 12px;
+    }
+    h2 { margin: 0; font-size: 22px; }
+    p { margin: 0; color: #8794ab; }
+    img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid #2a3449;
+      border-radius: 10px;
+      background: #0b0e16;
+      box-shadow: 0 18px 50px rgb(0 0 0 / 38%);
+    }
+    .hint { margin-left: auto; font-size: 13px; color: #8794ab; }
+    @media (max-width: 760px) {
+      header { align-items: flex-start; flex-direction: column; }
+      main { padding: 14px; }
+      figcaption { align-items: flex-start; flex-direction: column; }
+      .hint { margin-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Visual Specs — elegir layout</h1>
+    <nav aria-label="Prototipos">
+      <a href="#a">A · Context Bar</a>
+      <a href="#b">B · Project Rail</a>
+      <a href="#c">C · Guided Overlay</a>
+    </nav>
+  </header>
+  <main>
+    <figure id="a">
+      <figcaption>
+        <h2>A · Context Bar</h2>
+        <p>Contexto y proyecto arriba; toolbar pura de mapa debajo.</p>
+        <span class="hint">Click en la imagen para verla sola</span>
+      </figcaption>
+      <a href="A-context-bar.png"><img src="A-context-bar.png" alt="Prototipo A, Context Bar"></a>
+    </figure>
+    <figure id="b">
+      <figcaption>
+        <h2>B · Project Rail</h2>
+        <p>El ciclo del proyecto ocupa un rail persistente a la izquierda.</p>
+        <span class="hint">Click en la imagen para verla sola</span>
+      </figcaption>
+      <a href="B-project-rail.png"><img src="B-project-rail.png" alt="Prototipo B, Project Rail"></a>
+    </figure>
+    <figure id="c">
+      <figcaption>
+        <h2>C · Guided Overlay</h2>
+        <p>Onboarding contextual no modal sobre el ejemplo visible.</p>
+        <span class="hint">Click en la imagen para verla sola</span>
+      </figcaption>
+      <a href="C-guided-overlay.png"><img src="C-guided-overlay.png" alt="Prototipo C, Guided Overlay"></a>
+    </figure>
+  </main>
+</body>
+</html>

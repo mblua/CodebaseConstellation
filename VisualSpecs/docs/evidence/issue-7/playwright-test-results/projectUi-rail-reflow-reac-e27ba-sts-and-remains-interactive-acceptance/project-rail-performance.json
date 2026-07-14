@@ -1,0 +1,56 @@
+[
+  {
+    "deviceScaleFactor": 1,
+    "expanded": {
+      "cssWidth": 818,
+      "cssHeight": 848.5,
+      "clientWidth": 818,
+      "clientHeight": 849,
+      "backingWidth": 818,
+      "backingHeight": 849,
+      "inkCoverage": 0.26013973323654843
+    },
+    "finalMetrics": {
+      "cssWidth": 818,
+      "cssHeight": 848.5,
+      "clientWidth": 818,
+      "clientHeight": 849,
+      "backingWidth": 818,
+      "backingHeight": 849,
+      "inkCoverage": 0.26013973323654843
+    },
+    "samples": 12,
+    "p50": 30.700000002980232,
+    "p95": 31.30000000447035,
+    "worst": 31.30000000447035,
+    "rapidToggleCount": 22,
+    "pageErrors": []
+  },
+  {
+    "deviceScaleFactor": 2,
+    "expanded": {
+      "cssWidth": 818,
+      "cssHeight": 848.5,
+      "clientWidth": 818,
+      "clientHeight": 849,
+      "backingWidth": 1636,
+      "backingHeight": 1698,
+      "inkCoverage": 0.26004809343868085
+    },
+    "finalMetrics": {
+      "cssWidth": 818,
+      "cssHeight": 848.5,
+      "clientWidth": 818,
+      "clientHeight": 849,
+      "backingWidth": 1636,
+      "backingHeight": 1698,
+      "inkCoverage": 0.26004809343868085
+    },
+    "samples": 12,
+    "p50": 34.099999994039536,
+    "p95": 36,
+    "worst": 36,
+    "rapidToggleCount": 22,
+    "pageErrors": []
+  }
+]

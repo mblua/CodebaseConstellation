@@ -125,16 +125,41 @@ export class Controller {
   }
 
   replaceLoaded(loaded: LoadedDoc): void {
-    this.currentState = stateFromLoaded(loaded);
+    this.installLoaded(loaded, () => undefined);
+  }
+
+  /**
+   * Install one already-validated document together with related application state.
+   *
+   * `installRelated` is deliberately synchronous: ProjectController uses it to
+   * publish the matching ref/head/identity/dirty facts after the new AppState exists
+   * but before any Controller subscriber can observe it. No store or await belongs
+   * inside this boundary.
+   */
+  installLoaded(
+    loaded: LoadedDoc,
+    installRelated: () => void,
+    viewOverride?: ViewState,
+  ): void {
+    const loadedState = stateFromLoaded(loaded);
+    this.currentState =
+      viewOverride === undefined ? loadedState : { ...loadedState, view: viewOverride };
     this.currentDerived = derive(this.currentState);
     this.renderer.setViewport(this.currentState.view.viewport);
+    installRelated();
     this.render();
   }
 
   replaceView(view: ViewState): void {
+    this.installView(view, () => undefined);
+  }
+
+  /** Atomic sibling of `installLoaded` for a view-only application transition. */
+  installView(view: ViewState, installRelated: () => void): void {
     this.currentState = { ...this.currentState, view };
     this.currentDerived = derive(this.currentState);
     this.renderer.setViewport(this.currentState.view.viewport);
+    installRelated();
     this.render();
   }
 
