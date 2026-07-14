@@ -515,17 +515,23 @@ for (const projectAccess of ['editable', 'readonly'] as const) {
       const compactRecovery = page.getByRole('button', {
         name: 'Recovery available',
         exact: true,
+        includeHidden: true,
       });
       await expect(compactRecovery).toBeVisible();
+      await compactRecovery.evaluate((button) => {
+        (globalThis as unknown as Record<string, unknown>)['__compactRecoveryOpenerNode'] = button;
+      });
       const genericProjectShow = page.locator('#show-project-rail');
+      const projectCollapse = page.getByRole('button', {
+        name: 'Collapse project rail',
+        exact: true,
+      });
       const focusRoundTripState = projectSafetyState(await readProjectState(page));
       const focusRoundTripRaw = await rawDocument(page);
       const focusRoundTripViewport = await viewport(page);
       await compactRecovery.click();
       await expect(page.locator('#project-rail')).toBeVisible();
-      await expect(
-        page.getByRole('button', { name: 'Collapse project rail', exact: true }),
-      ).toBeFocused();
+      await expect(projectCollapse).toBeFocused();
       await expect.poll(() => readProjectLayout(page)).toMatchObject({
         band: expectedBand,
         activeOverlay: 'project',
@@ -546,7 +552,95 @@ for (const projectAccess of ['editable', 'readonly'] as const) {
       expect(projectSafetyState(await readProjectState(page))).toEqual(focusRoundTripState);
       expect(await rawDocument(page)).toEqual(focusRoundTripRaw);
       expect(await viewport(page)).toEqual(focusRoundTripViewport);
+      expect(await activeFocusSafety(page)).toEqual({ body: false, hiddenSubtree: false });
+      expect(
+        await compactRecovery.evaluate(
+          (button) =>
+            (globalThis as unknown as Record<string, unknown>)[
+              '__compactRecoveryOpenerNode'
+            ] === button,
+        ),
+      ).toBe(true);
       await expect(exportRecovery).toBeHidden();
+
+      if (projectAccess === 'editable') {
+        await compactRecovery.click();
+        await expect(projectCollapse).toBeFocused();
+        await page.setViewportSize({ width: 1199, height: 900 });
+        await waitForLayoutPaint(page);
+        await expect.poll(() => readProjectLayout(page)).toMatchObject({
+          band: 'narrow',
+          activeOverlay: 'project',
+          projectOpen: true,
+        });
+        await expect(projectCollapse).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(compactRecovery).toBeVisible();
+        await expect(compactRecovery).toBeFocused();
+        await expect(genericProjectShow).not.toBeFocused();
+        await expect.poll(() => readProjectLayout(page)).toMatchObject({
+          band: 'narrow',
+          activeOverlay: null,
+          projectOpen: false,
+        });
+        expect(await activeFocusSafety(page)).toEqual({ body: false, hiddenSubtree: false });
+        expect(projectSafetyState(await readProjectState(page))).toEqual(focusRoundTripState);
+        expect(await rawDocument(page)).toEqual(focusRoundTripRaw);
+        expect(await viewport(page)).toEqual(focusRoundTripViewport);
+
+        await compactRecovery.click();
+        await expect(projectCollapse).toBeFocused();
+        await page.setViewportSize({ width: 1200, height: 900 });
+        await waitForLayoutPaint(page);
+        await expect.poll(() => readProjectLayout(page)).toMatchObject({
+          band: 'hybrid',
+          activeOverlay: 'project',
+          projectOpen: true,
+        });
+        await expect(projectCollapse).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(compactRecovery).toBeVisible();
+        await expect(compactRecovery).toBeFocused();
+        await expect(genericProjectShow).not.toBeFocused();
+        await expect.poll(() => readProjectLayout(page)).toMatchObject({
+          band: 'hybrid',
+          activeOverlay: null,
+          projectOpen: false,
+        });
+        expect(await activeFocusSafety(page)).toEqual({ body: false, hiddenSubtree: false });
+        expect(projectSafetyState(await readProjectState(page))).toEqual(focusRoundTripState);
+        expect(await rawDocument(page)).toEqual(focusRoundTripRaw);
+        expect(await viewport(page)).toEqual(focusRoundTripViewport);
+        expect(
+          await compactRecovery.evaluate(
+            (button) =>
+              (globalThis as unknown as Record<string, unknown>)[
+                '__compactRecoveryOpenerNode'
+              ] === button,
+          ),
+        ).toBe(true);
+
+        await compactRecovery.click();
+        await expect(projectCollapse).toBeFocused();
+        await compactRecovery.evaluate((button) => {
+          (button as HTMLButtonElement).hidden = true;
+        });
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#project-rail')).toBeHidden();
+        await expect(compactRecovery).toBeHidden();
+        await expect(genericProjectShow).toBeVisible();
+        await expect(genericProjectShow).toBeFocused();
+        await expect.poll(() => readProjectLayout(page)).toMatchObject({
+          activeOverlay: null,
+          projectOpen: false,
+        });
+        expect(await activeFocusSafety(page)).toEqual({ body: false, hiddenSubtree: false });
+        expect(projectSafetyState(await readProjectState(page))).toEqual(focusRoundTripState);
+        await compactRecovery.evaluate((button) => {
+          (button as HTMLButtonElement).hidden = false;
+        });
+        await expect(compactRecovery).toBeVisible();
+      }
 
       await compactRecovery.click();
       await expect(page.locator('#project-rail')).toBeVisible();
@@ -1748,6 +1842,18 @@ async function rawDocument(page: Page): Promise<Record<string, unknown>> {
       raw(): Record<string, unknown>;
     };
     return hooks.raw();
+  });
+}
+
+async function activeFocusSafety(
+  page: Page,
+): Promise<{ body: boolean; hiddenSubtree: boolean }> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return {
+      body: active === document.body,
+      hiddenSubtree: active instanceof HTMLElement && active.closest('[hidden]') !== null,
+    };
   });
 }
 

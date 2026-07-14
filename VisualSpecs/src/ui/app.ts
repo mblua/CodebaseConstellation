@@ -277,6 +277,32 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     );
   }
 
+  function projectOpenerCanSurviveClose(opener: HTMLElement | null): opener is HTMLElement {
+    if (
+      opener === null ||
+      !opener.isConnected ||
+      opener.hidden ||
+      opener.getAttribute('aria-disabled') === 'true' ||
+      (opener instanceof HTMLButtonElement && opener.disabled) ||
+      !projectCompact.contains(opener)
+    ) {
+      return false;
+    }
+    for (let ancestor = opener.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+      if (ancestor.hidden && ancestor !== projectCompact) return false;
+    }
+    return true;
+  }
+
+  function projectOpenerOrFallback(): HTMLElement {
+    const opener = overlayOpeners.project;
+    return projectOpenerCanSurviveClose(opener) ? opener : projectShow;
+  }
+
+  function preserveProjectOpenerOrFallback(): void {
+    overlayOpeners.project = projectOpenerOrFallback();
+  }
+
   function setSurface(which: Surface, open: boolean, opener: HTMLElement): void {
     const band = layoutBand();
     if (which === 'project') {
@@ -317,7 +343,11 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       );
     } else {
       const destination =
-        opener.isConnected && !opener.hidden ? opener : overlayOpeners[which];
+        which === 'project'
+          ? projectOpenerOrFallback()
+          : opener.isConnected && !opener.hidden
+            ? opener
+            : overlayOpeners[which];
       scheduleFocus(() => destination);
     }
   }
@@ -917,12 +947,12 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       e.preventDefault();
       const closing = activeOverlay;
       const opener =
-        overlayOpeners[closing] ??
-        (closing === 'project'
-          ? projectShow
-          : closing === 'sidebar'
-            ? sidebarToggle
-            : detailToggle);
+        closing === 'project'
+          ? projectOpenerOrFallback()
+          : overlayOpeners[closing] ??
+            (closing === 'sidebar'
+              ? sidebarToggle
+              : detailToggle);
       setSurface(closing, false, opener);
       return;
     }
@@ -981,21 +1011,30 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     if (next !== currentBand) {
       const previous = currentBand;
       const focused = document.activeElement;
+      const retainedProjectOverlay = activeOverlay === 'project';
       if (next === 'wide') {
         activeOverlay = null;
       } else if (next === 'hybrid') {
-        activeOverlay =
+        const automaticallyPromoted =
           previous === 'wide' &&
           currentProjectState.manifestProjectId !== null &&
-          projectPreference === 'expanded'
+          projectPreference === 'expanded';
+        activeOverlay =
+          automaticallyPromoted
             ? 'project'
             : activeOverlay === 'project' && projectPreference === 'expanded'
               ? 'project'
               : null;
-        if (activeOverlay === 'project') overlayOpeners.project = projectShow;
+        if (activeOverlay === 'project') {
+          if (automaticallyPromoted) overlayOpeners.project = projectShow;
+          else preserveProjectOpenerOrFallback();
+        }
       } else if (focused instanceof Node && projectRail.contains(focused)) {
         activeOverlay = currentProjectState.manifestProjectId === null ? null : 'project';
-        if (activeOverlay === 'project') overlayOpeners.project = projectShow;
+        if (activeOverlay === 'project') {
+          if (retainedProjectOverlay) preserveProjectOpenerOrFallback();
+          else overlayOpeners.project = projectShow;
+        }
       } else if (focused instanceof Node && sidebar.contains(focused)) {
         activeOverlay = 'sidebar';
         overlayOpeners.sidebar = sidebarToggle;
