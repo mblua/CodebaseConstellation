@@ -1,12 +1,12 @@
 # Plan #7: add a collapsible Project Rail
 
-Status: `IMPLEMENTATION_IN_PROGRESS`
+Status: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`
 
 Issue: <https://github.com/mblua/CodebaseConstellation/issues/7>
 
 Artifact owner: `vs-graph-runtime-dev`
 
-Delivery path: Full. The selected Project Rail changes the shell hierarchy, responsive drawer model, focus order, application-facing session identity, and the Canvas2D host's live dimensions. No canonical graph semantics or persistence formats change. Round 2 received constructive 3-of-3 support. At the round-3 limit, resilience cleared its plan findings, extraction supported responsive/evidence behavior but dissented on identity, and semantic retained the same valid identity P1. The core lead accepted that P1 and supplied the binding plan closure recorded below. This revision applies that arbitration only; production remains blocked pending explicit core conformance and the later independent executable gates.
+Delivery path: Full. The selected Project Rail changes the shell hierarchy, responsive drawer model, focus order, application-facing session identity, and the Canvas2D host's live dimensions. No canonical graph semantics or persistence formats change. Round 2 received constructive 3-of-3 support. At the round-3 limit, resilience cleared its plan findings, extraction supported responsive/evidence behavior but dissented on identity, and semantic retained the same valid identity P1. The core lead accepted that P1 and supplied the binding plan closure recorded below. The implementation applies that arbitration and is ready for executable review; production remains blocked pending core final review and both independent executable red-team gates.
 
 Base commit: `271ae86b5b064fa6a642a0cfb313f38e597031fb` (`feat: evolve CodebaseGuide into Visual Specs (#6)`).
 
@@ -811,4 +811,41 @@ Binding core disposition: the identity P1 is valid, accepted, and closed in the 
 
 Core-conformance record: the core lead inspected exact plan commit `c2f45f893c03df6f456240362c22ae38ee977312`, including its one-file diff, tracked status, UTF-16 escape/atom identity closure, session-kind discard deduplication, explicit `1663px` evidence flow, report dispositions, and retained executable gates. The decision `Issue #7 — READY_FOR_IMPLEMENTATION` issued on 2026-07-14 authorizes this artifact owner to implement the approved RFC on `feature/7-collapsible-project-rail` within the allowed artifact list and no-change boundaries. It does not authorize push, PR, merge, boundary expansion, or gate-final status.
 
-Readiness verdict: `READY_FOR_IMPLEMENTATION`. Implementation is in progress; core review and both independent executable red-team gates remain required before completion.
+Readiness verdict: `READY_FOR_IMPLEMENTATION`.
+
+## Implementation evidence
+
+Implementation commit: `3fe13259e6fba95d206ea32e3cc8b8d0d037d950` (`feat(visual-specs): add atomic collapsible project rail (#7)`).
+
+Implementation completed on 2026-07-14 within the approved artifact list. It introduces the stable Project Rail/compact-context shell, the Wide/Hybrid/Narrow transition model, shared project presentation and handler derivation, synchronous aggregate controller installs, structured session/dirty/corrupt-autosave/busy facts, immutable operation captures, and operation/session epoch fences. It does not change contract, schema, projection, extractor, renderer port, Canvas2D camera semantics, filesystem adapter contracts, or persisted project/document formats.
+
+The executable lifecycle evidence covers:
+
+- fully validated local Open/Create candidates followed by one synchronous aggregate document/project commit;
+- old-session observability during reads and no mixed cross-read notification state;
+- opposite-order Open A/Open B, Open/Create, Open/Enable, and Open/Save completions, with stale results unable to install UI or write through the later project's ref;
+- foreground/autosave overlap, including an already-started autosave that cannot mutate UI after a foreground epoch begins;
+- exact cancel/failure preservation, session-kind discard deduplication, temporary-file read fencing, privileged picker call counts, and maximum-size preflight;
+- stable mounted controls across notifications, caret/value/composition preservation, full global-shortcut target suppression, exact Escape/opener focus, and cleanup of coalesced resize/focus animation frames.
+
+Identity evidence exercises default ignorables, NFC/NFD, bidi, whitespace/control units, raw backslash, markup-looking ASCII, lone surrogates, surrogate pairs, equal-prefix/suffix collision windows, and the 100,000-code-unit maximum. Tests assert exact `charCodeAt`-ordered uppercase `\uXXXX` atoms, printable-ASCII distinct compact tokens, complete associated accessible identity, inert LTR/monospace rendering, unchanged raw manifest bytes, and non-use as a DOM/ref/path/command/persistence key.
+
+Responsive and renderer evidence covers `800`, `1024`, `1199`, `1200`, `1440`, `1663`, `1664`, and `1680` CSS-pixel widths. The `1663px` Hybrid flow retains the Explorer preference while truthfully suppressing its presentation, keeps Details docked, and preserves the selected edge's confidence and ordered evidence through Project open/close and exact focus restoration. Narrow uses one exclusive overlay and preserves desktop preferences. Real post-reflow pointer tests select a node and edge, zoom, pan, and drag without changing scene identity, viewport, selection, expansion, filter, or dirty facts.
+
+Measured collapse/reopen endpoints at `1680x1000`:
+
+- DPR 1: canvas CSS `818 x 848.5`, client `818 x 849`, backing `818 x 849`, ink coverage `0.2601397332`; 12 samples with p50 `28.8 ms`, p95 `30.5 ms`, worst `30.5 ms`; 22 rapid toggles and zero page errors.
+- DPR 2: canvas CSS `818 x 848.5`, client `818 x 849`, backing `1636 x 1698`, ink coverage `0.2600480934`; 12 samples with p50 `31.3 ms`, p95 `33.5 ms`, worst `33.5 ms`; 22 rapid toggles and zero page errors.
+
+The machine-readable timing artifact is attached by the Playwright test as `project-rail-performance.json`. Noncanonical review captures include the example, editable-collapsed, action-error-plus-trust-banners, Narrow inline/overlay, and `1663px` Hybrid evidence states. The four canonical documentation screenshots were regenerated only through `npm run update:screenshots` and inspected as an explicit diff.
+
+Executed gates:
+
+- baseline before implementation: 20 unit-test files / 267 tests;
+- `npm run verify`: PASS — 20 unit-test files / 310 tests, TypeScript typecheck, production build, adapter smoke 7/7, browser acceptance 30/30;
+- production build: 39 modules; `main.js` 1,390.37 kB / 96.89 kB gzip and `main.css` 11.66 kB / 3.12 kB gzip;
+- `npm run update:screenshots`: PASS — 4/4 canonical captures;
+- `git diff --check`: PASS;
+- strict Playwright/Vite port 5175: confirmed free after the gates; `strictPort` and `reuseExistingServer: false` remain unchanged.
+
+Implementation verdict: `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`. Core final review and both independent executable red-team gates remain mandatory. No push, PR, merge, boundary expansion, or gate-final status is claimed.
