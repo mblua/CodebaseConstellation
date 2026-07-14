@@ -1,12 +1,12 @@
 # Plan #7: add a collapsible Project Rail
 
-Status: `DRAFT_PREMORTEM_FINDINGS_IN_RESOLUTION`
+Status: `DRAFT_CORE_ARBITRATION_APPLIED`
 
 Issue: <https://github.com/mblua/CodebaseConstellation/issues/7>
 
 Artifact owner: `vs-graph-runtime-dev`
 
-Delivery path: Full. The selected Project Rail changes the shell hierarchy, responsive drawer model, focus order, application-facing session identity, and the Canvas2D host's live dimensions. No canonical graph semantics or persistence formats change. Round 2 received constructive 3-of-3 support, but both independent premortems returned blocking findings. This round defines deterministic closures only; production remains blocked until both reviewers re-verify it with no unresolved P0/P1 finding.
+Delivery path: Full. The selected Project Rail changes the shell hierarchy, responsive drawer model, focus order, application-facing session identity, and the Canvas2D host's live dimensions. No canonical graph semantics or persistence formats change. Round 2 received constructive 3-of-3 support. At the round-3 limit, resilience cleared its plan findings, extraction supported responsive/evidence behavior but dissented on identity, and semantic retained the same valid identity P1. The core lead accepted that P1 and supplied the binding plan closure recorded below. This revision applies that arbitration only; production remains blocked pending explicit core conformance and the later independent executable gates.
 
 Base commit: `271ae86b5b064fa6a642a0cfb313f38e597031fb` (`feat: evolve CodebaseGuide into Visual Specs (#6)`).
 
@@ -87,8 +87,8 @@ After Create/Open succeeds, the rail remains expanded once so the resulting iden
 
 The rail then renders only the controls applicable to its state:
 
-- read-only project: name, labeled full canonical manifest project id, `Project access: read-only`, `Enable editing`, Document, browse-only Project data;
-- editable project: name, labeled full canonical manifest project id, `Project access: editable`, accessible dirty state, `Save`, Rename, conditional Project data;
+- read-only project: name, labeled full escaped canonical manifest project identifier, `Project access: read-only`, `Enable editing`, Document, browse-only Project data;
+- editable project: name, labeled full escaped canonical manifest project identifier, `Project access: editable`, accessible dirty state, `Save`, Rename, conditional Project data;
 - repair: mismatch warning and primary `Repair project`;
 - preview: primary `Return to project`, with write actions suppressed;
 - pending autosave: `Recovery available` plus the existing restore/keep/export recovery actions only while the rail is expanded.
@@ -103,7 +103,7 @@ The docked rail contributes zero layout width and no focusable descendants. Stab
 
 - `Show project rail`;
 - full accessible project name, visually truncatable;
-- a short visible and full accessible canonical manifest `project.id` discriminator;
+- a labeled collision-aware visible ASCII escaped `project.id` token plus an actual accessible name/description containing the project name and full escaped identifier;
 - every applicable text state, composed from the shared presentation model (`Project access: read-only` or `Project access: editable`, `Document: read-only`, `Unsaved project changes`, `Repair needed`, `Preview`, `Recovery available`, and `Corrupt autosave ignored`);
 - at most one critical action with precedence: Return, Repair, Enable editing, then Save when `canWriteProject && projectDirty`;
 - a non-primary `Recovery available` indication when pending autosave exists; recovery choices remain in the reopened rail.
@@ -151,13 +151,34 @@ interface ProjectControllerState {
 }
 ```
 
-`displayLabel` is untrusted presentation identity only. It changes only after the candidate document/project has validated and the corresponding load/open transition succeeds. It renders through text nodes, preferably inside `<bdi dir="auto">`, with its full accessible value even when visually truncated. It must never become canonical `model.source`, evidence, a filesystem path, a DOM id/class, confidence, or project/document/export/autosave data.
+`displayLabel` is untrusted presentation identity only. It changes only after the candidate document/project has validated and the corresponding load/open transition succeeds. It renders through inert text nodes, preferably inside `<bdi dir="auto">`, with its full accessible value even when visually truncated. It must never become canonical `model.source`, evidence, a filesystem path, a DOM id/class, confidence, or project/document/export/autosave data.
 
-`manifestProjectId` is the already-persisted canonical `project.id` read from the validated manifest, exposed only after the atomic session commit. The expanded rail shows a labeled, wrapped full id. Compact context shows a labeled short prefix/suffix discriminator and exposes the full id in its accessible name/title. If that short form would equal the previous selected project's short form while the full ids differ, a synchronous code-point-safe formatter expands around the first differing segment (and length when needed) until the two visible tokens differ. Both forms are untrusted text in `<bdi dir="auto">`. The id is never a DOM identifier, command key, `ProjectRef`, path, or newly persisted field.
+`manifestProjectId` remains the exact, already-persisted canonical `project.id` read from the validated manifest and is exposed only after the atomic session commit. No normalization, trimming, case-folding, hashing, parsing, scalar-value iteration, or raw-value replacement is allowed. A pure presentation formatter iterates indexes `0..raw.length - 1` with `charCodeAt`, therefore visiting the exact JavaScript UTF-16 code-unit sequence rather than normalized Unicode scalars, and constructs an ordered list of escape atoms:
 
-This reversible presentation choice trades compact cognitive noise and disclosure of a manifest-local identifier for distinguishing valid same-name projects without revealing a selected root path. Same-name fixtures, including ids with equal default prefix/suffix but a differing middle, must become visibly distinct after the transition and always differ by accessible full value. If evidence finds another invariant-breaking abbreviation case, reopen this decision; never substitute a root path.
+- emit a unit literally only when it is visible ASCII `0x21..0x7E` and is not backslash (`0x5C`);
+- otherwise emit the literal six-character atom `\uXXXX`, with exactly four uppercase hexadecimal digits;
+- encode backslash, space, controls, every non-ASCII unit, lone surrogates, and each unit of a surrogate pair through that second rule; for example, a raw backslash is `\u005C` and UTF-16 units `D83D DE00` become `\uD83D\uDE00`;
+- concatenate the atoms without decoding or reparsing them.
 
-This is application presentation state only. It does not modify contract, schema, model, projection, extractor output, or stored JSON. It adds a small explicit state surface in exchange for eliminating message parsing and preventing the UI from claiming that the bundled example is a picked temporary file. The `sessionKind`/`displayLabel` decision received constructive 3-of-3 support in round 2; the manifest-id discriminator is a round-3 refinement with renewed support recorded below.
+The mapping is injective over UTF-16 code-unit sequences: a raw backslash can never be a literal output atom, and every escaped atom has fixed width. The full escaped value is presentation-only and does not replace the raw state value. It renders through `textContent` or equivalent inert text construction in a monospace LTR-isolated element such as `<bdi dir="ltr">`; it is never interpreted as markup. The raw id may be separately isolated for diagnostics, but raw Unicode glyphs are never the sole visible or accessible discriminator.
+
+The expanded rail visibly renders a label plus the complete escaped identifier, with wrapping that preserves complete atoms. Its actual accessible name or description includes the project name plus that complete escaped identifier through associated visible text or visually-hidden text. `title` may repeat this value only as supplementary help and is never the accessibility mechanism.
+
+Compact context visibly renders a label plus a collision-aware ASCII token. Its default prefix/suffix abbreviation operates on complete escape atoms and never slices a `\uXXXX` atom; every omission delimiter and length marker also uses visible ASCII only (for example, `...`, not a Unicode ellipsis). When that default token equals the previous selected same-name project's token while the exact raw ids differ, the formatter locates the first differing escape atom and exposes/expands a bounded window around it. If the difference is end-of-sequence, the token also includes an explicit ASCII length marker. The current and previous actual visible tokens must then differ; CSS sizing/truncation may wrap the token but may not hide the distinguishing atom or length marker. Compact accessibility still includes the project name plus the complete escaped identifier through associated or visually-hidden text, independently of `title`.
+
+This reversible presentation choice trades compact cognitive noise and disclosure of a manifest-local identifier for injectively distinguishing contract-valid same-name projects without revealing a selected root path. The id and its escaped/token forms are never DOM identifiers, selectors, command keys, `ProjectRef` values, filesystem paths, evidence paths, or newly persisted fields. Raw manifest and project/document/export/autosave bytes remain unchanged.
+
+Required identity fixtures use angle-bracket unit notation only to construct exact raw test strings:
+
+- `project-alpha` versus `project-<U+200B>alpha`, producing full escapes `project-alpha` and `project-\u200Balpha`;
+- `same<U+200B>id` versus `same<U+2060>id`, producing `same\u200Bid` and `same\u2060id`;
+- NFC `caf<U+00E9>` versus NFD `cafe<U+0301>`, producing `caf\u00E9` and `cafe\u0301` without normalization;
+- bidi `a<U+202E>b` → `a\u202Eb`; whitespace/control `a<U+0020>b` → `a\u0020b` and `a<U+000A>b` → `a\u000Ab`; raw backslash `a<U+005C>b` → `a\u005Cb`; and markup-looking ASCII `<script>` → the same visible characters inserted only as inert text;
+- a lone UTF-16 surrogate `0xD800` and a valid surrogate pair, proving `\uD800` and separate fixed-width atoms respectively;
+- distinct ids with equal default prefix/suffix and a middle difference, including a difference otherwise hidden by CSS truncation;
+- the existing maximum-length contract case.
+
+For every compared distinct raw id, tests require different actual visible tokens whose code units all lie in `0x21..0x7E`, complete escaped accessible identity without relying on `title`, inert rendering, and no DOM/ref/path/command/persistence use. A before/after byte assertion proves the raw persisted identifier is unchanged. This is application presentation state only: it does not modify contract, schema, model, projection, extractor output, or stored JSON. The original `sessionKind`/`displayLabel` decision retains constructive 3-of-3 support; the binding replacement for the manifest-id refinement is recorded below.
 
 ### One shared derived project presentation model
 
@@ -217,11 +238,15 @@ Opposite-order deferred tests cover Open A/Open B, Open/Create, Open/Enable, and
 
 Every capability-valid Create Project, Open Project, and Open JSON temporarily handler—expanded, compact, keyboard, or responsive—uses `hasDiscardableChanges`. Create is capability-invalid during Preview and remains absent until Return.
 
-The guard is synchronous and precedes the direct controller/store invocation. Its copy is composed from the two actual facts:
+The guard is synchronous and precedes the direct controller/store invocation. `hasDiscardableChanges = dirty || projectDirty === true` remains its single admission predicate, but confirmation copy deduplicates ownership by `sessionKind`:
 
-- active Preview/document `dirty`: “The current preview/document has unsaved view changes”;
-- underlying `projectDirty`: “The open project has unsaved layout or view changes”;
-- both: name both losses in one confirmation.
+| Session kind | Loss facts used for copy | Required confirmation meaning |
+| --- | --- | --- |
+| `example` / `temporary` | active-document `dirty` only; `projectDirty` is `null` | when dirty, name the current document's unsaved view changes once |
+| `project` | `dirty` and `projectDirty` describe the same ordinary-project loss | when either is true, name the open project's unsaved layout/view changes once, never as two losses |
+| `project-preview` | active Preview `dirty` and underlying `projectDirty` are independent owners | name neither, either one, or both distinct losses according to the two facts |
+
+The ordinary-project rule also deduplicates a defensive/transitional snapshot where only one alias is true. Only `project-preview` can produce copy that names two independent losses.
 
 Cancel returns before the controller method, so picker/permission call count remains zero and session kind, preview/return state, project identity/ref/head, viewport, selection, layout, filter, rail/overlay preference, focus, active/underlying dirty, recovery, and action error remain unchanged. Accept invokes the privileged method immediately in the same trusted activation task; later picker cancellation/failure also preserves the complete old session and reports only an action-specific transient error when appropriate.
 
@@ -247,7 +272,7 @@ This gives up keeping the same world point at the same absolute screen coordinat
 
 The current docked CSS tokens are Explorer `290px` and Details `380px`; round 1's roughly 840 px arithmetic used prototype targets of about `264px` and `340px`, not the implementation defaults. A `232px` rail beside the real defaults would leave only `778px` before any remaining chrome, so it cannot substantiate the accepted expanded budget.
 
-Round 2 makes the width choice explicit: retain the current `290px` Explorer and `380px` Details tokens unchanged, and start the docked Project Rail at `192px` (border-box). This leaves a nominal `818px` canvas at 1680 and gives up 40 px of the prototype rail width; long identity text wraps or truncates while retaining its full accessible `<bdi>` value. The narrow overlay may use a separate approximately `232px` token because it does not participate in docked canvas arithmetic.
+Round 2 makes the width choice explicit: retain the current `290px` Explorer and `380px` Details tokens unchanged, and start the docked Project Rail at `192px` (border-box). This leaves a nominal `818px` canvas at 1680 and gives up 40 px of the prototype rail width; long names may truncate with their full accessible value, while escaped project-id text wraps only at atom boundaries and never hides the compact distinguishing atom. The narrow overlay may use a separate approximately `232px` token because it does not participate in docked canvas arithmetic.
 
 Proposed budget:
 
@@ -265,7 +290,7 @@ The round-2 `~1440px` proposal is replaced by measured bands that retain the exi
 - **Hybrid, `1200..1663px`:** no-project onboarding is inline. With a project, Project is an approximately `232px` left overlay. While it is open, Explorer presentation and its grid column are suppressed without mutating Explorer's desktop preference; the rail overlays the reclaimed canvas edge. Details retains its independent docked preference. Closing Project restores Explorer presentation and focus predictably.
 - **Narrow, `<1200px`:** no-project onboarding is inline; Project, Explorer, and Details share one exclusive overlay state over a full-width canvas.
 
-This gives up docking Project in the intermediate band to avoid a 578px nominal canvas at 1440 and an Explorer hidden beneath an overlay. Identity and docking are round-3 transverse refinements; renewed constructive support is recorded below and must remain valid through final review.
+This gives up docking Project in the intermediate band to avoid a 578px nominal canvas at 1440 and an Explorer hidden beneath an overlay. Extraction gave the responsive/evidence refinement round-3 `SUPPORT`; identity now follows the binding core representation and awaits conformance as recorded below.
 
 ## UI-state model and exhaustive overlay transitions
 
@@ -283,7 +308,14 @@ let desktopPreference = {
 let activeOverlay: Surface | null = null;
 let overlayOpener: HTMLElement | null = null;
 let lastManifestProjectId: string | null = null;
+let previousSelectedProjectIdentity: {
+  displayLabel: string;
+  manifestProjectId: string;
+  compactToken: string;
+} | null = null;
 ```
+
+`previousSelectedProjectIdentity` is ephemeral mounted presentation state only. Immediately before a successful different-project commit replaces the current session, it snapshots the prior project's exact name/raw id and actual compact token; it is used only when the next exact name matches and the raw ids differ. Both raw ids are formatted into atom lists afresh for the bounded differing-window calculation. It is never serialized or used as a ref/key/path.
 
 Wide preferences change only through explicit surface toggles or the accepted new-project identity rule. Breakpoints and overlay exclusivity never overwrite them. `activeOverlay` is always `null` in Wide, only `project | null` in Hybrid, and any one surface or `null` in Narrow.
 
@@ -296,7 +328,7 @@ Wide preferences change only through explicit surface toggles or the accepted ne
 | Show Details | set Details preference open/docked | set Details preference open/docked; Project overlay may remain | replace active overlay with Details | explicit desktop toggle updates Details preference; narrow replacement does not |
 | Hide Details / Escape in Details | set Details preference closed | set preference closed/remove column | clear overlay | focus exact visible Details opener |
 | Other overlay opens | not applicable | only Project is an overlay; Explorer restore closes it, Details can remain docked | atomically replace current overlay | old hidden subtree has no focus; focus new surface; retain all desktop preferences |
-| New manifest project id commits | force Project preference expanded/docked | open Project overlay and suppress Explorer | open Project overlay | update `lastManifestProjectId`; focus Project identity/collapse control after the atomic lifecycle commit |
+| New manifest project id commits | force Project preference expanded/docked | open Project overlay and suppress Explorer | open Project overlay | snapshot prior identity/token, update `lastManifestProjectId`, derive the new atom-safe collision token, then focus Project identity/collapse control after the atomic lifecycle commit |
 | Project becomes null/temporary | show docked no-project start | clear overlay and show inline start; restore Explorer | clear overlay and show inline start | do not serialize preference; move hidden focus to visible Create/Open start control |
 | `1199 → 1200` | not applicable | Project overlay remains Project; Explorer/Details become docked only per preferences | source state | if a narrow Explorer/Details was active but its preference is closed, close to its visible toggle; never focus `body` |
 | `1200 → 1199` | not applicable | source state | choose the currently focused visible surface as the sole overlay, otherwise start closed | preserve focused element when its stable surface remains visible; otherwise focus its toggle |
@@ -332,7 +364,9 @@ Evidence reachability is also invariant under chrome changes: after a real post-
 - A Hybrid/Narrow overlay handles Escape before editing-key suppression, closes only the active overlay, and returns focus to its exact current visible opener.
 - Any responsive/state transition that hides focused content first selects a stable visible destination; focus must never fall silently to `body`.
 - While open, Project context precedes map controls in DOM/Tab order. While closed, compact context precedes map controls.
-- Project/session/name/id truncation retains the full untrusted text value in a `<bdi dir="auto">` or equivalent isolated text-node presentation and a full accessible name/title.
+- Project/session/name truncation retains the full untrusted name through inert `<bdi dir="auto">` or equivalent isolated text and an actual accessible name/description.
+- Project-id presentation uses only the injective escaped ASCII form as its visible discriminator, in inert monospace LTR isolation. Expanded UI visibly labels the complete escape; compact UI visibly labels a collision-aware token whose distinguishing atom cannot be truncated. Both actual accessible name/descriptions contain project name plus the complete escaped identifier through associated or visually-hidden text; `title` is supplementary only.
+- `aria-expanded` describes current presentation, not the stored desktop preference: a Hybrid-suppressed Explorer reports `false`, then reports `true` when restored from its retained open preference.
 - Project access read-only/editable, semantic document read-only, Unsaved, Repair, Preview, Recovery, and corrupt-autosave facts compose as text; none relies on color/icon-only meaning or suppresses another applicable fact.
 - Project state changes use the existing polite status path or a narrowly scoped polite region; canvas resize itself is not announced.
 - Explorer and Details retain their existing labels, `aria-expanded`, shortcuts, and narrow exclusivity behavior.
@@ -378,10 +412,12 @@ If browser evidence reveals that the existing port/adapter cannot meet the invar
 
 - P1: the rail and Explorer are distinct named regions; neither toggle mutates the other's desktop preference or graph data.
 - P1: no-project Create/Open is visible and precedes map controls at every representative viewport.
-- P1: collapsed project state always exposes reopen, project name plus canonical manifest-id discriminator, state, and Return/Repair/Enable/Save when applicable; same-name projects remain distinguishable.
+- P1: collapsed project state always exposes reopen, project name plus a labeled collision-aware escaped manifest-id token, state, and Return/Repair/Enable/Save when applicable; same-name distinct raw UTF-16 ids produce different actual visible ASCII tokens.
+- P1: expanded identity visibly exposes the labeled complete injective UTF-16 escape, and both expanded/compact actual accessible identities contain project name plus that full escape without relying on `title`; default-ignorables, normalization lookalikes, bidi/control/space/backslash, surrogate, middle-difference, markup-looking, and maximum-length cases remain inert and distinguishable.
+- P1: exact raw `manifestProjectId` state and persistence bytes are unchanged; raw or escaped identity never becomes a DOM/ref/command/path/evidence/persistence key.
 - P1: status labels are conjunctive: project access, semantic document read-only, project dirty, preview, repair, recovery, and corrupt-autosave facts all remain visible when simultaneous; selecting one critical action by precedence never suppresses a true label.
 - P1: preview exposes the underlying project's `projectDirty` value independently from the active preview document's `dirty` value, including after permission/repair/recovery transitions.
-- P1: `hasDiscardableChanges` guards every capability-valid context switch; cancel calls no picker and preserves both dirty owners, while accept retains trusted activation and names every applicable loss.
+- P1: `hasDiscardableChanges` guards every capability-valid context switch; cancel calls no picker and preserves both dirty owners, while accept retains trusted activation and names every applicable loss exactly once per session owner—ordinary project aliases deduplicate, and only Preview may name two losses.
 - P1: the old complete session remains observable during fallible lifecycle reads; one non-awaiting winning commit installs document/ref/head/identity/dirty/warnings together, and stale epochs never mix or write across sessions.
 - P1: `lifecycleBusy` disables incompatible lifecycle/write capabilities synchronously; stale success/error cannot clear the winning busy/error state.
 - P1: global dirty-source, coverage, unresolved, semantic-read-only, privacy/validation, refresh-loss, and filter banners remain outside the hideable rail, visible, and in the accessibility tree at wide and narrow viewports.
@@ -393,7 +429,8 @@ If browser evidence reveals that the existing port/adapter cannot meet the invar
 - P1: repair and preview cannot expose write actions for the wrong document state.
 - P1: rail toggles do not change viewport values, selection, expansion, pinned/dragged positions, filters, or dirty state.
 - P1: canvas backing size and pointer mapping are correct immediately after reflow; node/edge hit testing and drag remain correct.
-- P1: closing a narrow rail and opening Details after a post-reflow selection preserves selection and exposes expected confidence plus `.evidence` `path:line` entries.
+- P1: closing a Narrow rail and opening Details after a post-reflow selection preserves selection and exposes expected confidence plus `.evidence` `path:line` entries.
+- P1: at Hybrid width, opening Project suppresses only Explorer presentation while retaining its preference; docked Details preserves the selected edge, confidence, and identical `.evidence` `path:line`, and close restores Explorer, focus, and truthful `aria-expanded`.
 - P1: project/filesystem commands retain direct user activation, permission, freshness, conflict, backup, and safe-open behavior.
 - P2: a docked collapse reclaims the complete rail width with no empty gutter.
 - P2: the three-band transition table permits at most one overlay, preserves all desktop preferences, and does not cause document horizontal scrolling.
@@ -415,13 +452,14 @@ Expected production edits:
   - discard confirmation, trusted activation, action-specific error host, and capability/busy presentation;
   - focus transfer, Escape handling, overlay exclusivity, coalesced resize scheduling/cleanup;
   - one pure shared status/action derivation consumed by expanded and compact surfaces;
+  - one pure UTF-16-code-unit escape/atom formatter plus collision-aware compact presentation, used only for inert identity text;
   - reuse of one handler registry backed by existing ProjectController commands;
   - keep global trust/evidence banners outside the rail and every overlay subtree.
 - `VisualSpecs/src/styles.css`
   - outer rail/workspace layout, compact context, state labels, conditional groups;
   - 1664/1200 docked/hybrid/narrow presentation, banner layering, and horizontal containment/internal vertical overflow constraints.
 - `VisualSpecs/src/app/projectController.ts`
-  - UI-facing `sessionKind`/untrusted `displayLabel` plus manifest project-id identity;
+  - UI-facing `sessionKind`/untrusted `displayLabel` plus the exact raw manifest project-id identity;
   - `projectDirty`, `hasDiscardableChanges`, current `corruptAutosaveIgnored`, and `lifecycleBusy` facts;
   - epoch/session-token guarded candidate loading and atomic aggregate lifecycle commit;
   - no persistence behavior changes and no generic notification redesign.
@@ -456,7 +494,7 @@ Do not change:
 - contract validation/import/export semantics;
 - canonical graph model, hierarchy, domain commands, layout engine, projection, aggregated connections, evidence, or confidence semantics;
 - canonical `model.source`, evidence/path identity, confidence, or extraction provenance from untrusted `displayLabel`;
-- canonical manifest `project.id` value/validation/storage, selected-root disclosure, or any use of its presentation discriminator as a command/ref key;
+- canonical manifest `project.id` value, UTF-16 sequence, validation, serialization bytes, or storage; selected-root disclosure; derived escape persistence; or any use of raw/escaped/token identity as a DOM/selector/command/ref/path/evidence key;
 - meaning, derivation, or placement in the accessibility tree of existing global trust/evidence banners;
 - renderer port shape or Canvas2D coordinate convention;
 - filesystem adapter, File System Access permission model, project manifest/current revision protocol, backup ordering, freshness/conflict handling, repair semantics, import/export destinations, or autosave format;
@@ -469,18 +507,18 @@ No backend, cloud state, telemetry, handle persistence, localStorage, schema mig
 
 ## Implementation sequence
 
-1. Commit this round-3 finding-response plan and record renewed constructive support for the manifest-id and three-band docking refinements.
-2. Obtain semantic and resilience re-verification of every planned closure. Do not start production code until both report no unresolved P0/P1 finding.
+1. Commit this plan-only binding-arbitration revision and report its exact SHA, diff/checks, and tracked status to the core lead.
+2. Await explicit core conformance and implementation-readiness disposition. `DRAFT_CORE_ARBITRATION_APPLIED` does not authorize production code.
 3. Implement the epoch/session-token boundary, atomic aggregate commit, `lifecycleBusy`, identity/discard/corrupt-status facts, and deferred opposite-order unit tests first.
 4. Implement the one discard guard, Preview semantics, direct trusted activation, and separate action-error host with failure/coexistence tests.
 5. Refactor shell construction once: mount stable Project Rail/compact/form/error DOM before a pure map toolbar and use one derived model/handler registry.
-6. Implement access/document/dirty/preview/repair/recovery labels plus name/manifest-id identity, conditional groups, shortcut isolation, focus/caret/composition preservation, and Create-during-Preview disposition.
+6. Implement access/document/dirty/preview/repair/recovery labels plus name and injectively escaped manifest-id identity, collision-safe atom abbreviation, conditional groups, shortcut isolation, focus/caret/composition preservation, and Create-during-Preview disposition.
 7. Implement independent desktop preferences, the exhaustive active-overlay table, and `>=1664`/`1200..1663`/`<1200` CSS with 192/232/290/380 measured tokens and containment rules.
 8. Wire coalesced post-layout `controller.resize()`, destroy cleanup, DPR 1/2 endpoint instrumentation, and verify the existing renderer adapter without changing its port.
-9. Add focused browser tests for lifecycle/discard/activation/errors/stable DOM/focus/ARIA, responsive transitions, width reclamation, state preservation, and real post-reflow interactions.
+9. Add focused browser tests for lifecycle/discard/activation/errors/stable DOM/focus/ARIA, escaped-identity fixtures, responsive transitions including the Hybrid evidence flow, width reclamation, state preservation, and real post-reflow interactions.
 10. Add representative responsive/visual evidence at boundaries plus 1680/1024/800, maximum hostile status content, banner occlusion, and rapid toggles.
 11. Run unit, typecheck, build, adapter smoke, acceptance smoke, architecture boundary, performance, and screenshot review gates.
-12. Send the completed diff/evidence through constructive review-response and both independent final adversarial verdicts. Maximum three rounds before arbitration/escalation.
+12. Once implementation is explicitly authorized, send the completed diff/evidence through both independent final executable gates; the plan-level clearances/arbitration do not waive those reviews.
 13. Only after all gates pass, commit final implementation, push the issue branch, and open the issue-closing PR through the enforced workflow.
 
 ## Focused test plan
@@ -489,7 +527,10 @@ No backend, cloud state, telemetry, handle persistence, localStorage, schema mig
 
 - initial example snapshot exposes structured `example / AgentsCommander` identity through `displayLabel`;
 - a validated picked standalone JSON changes identity to `temporary / <display label>`; validation/cancel/failure leaves the prior label unchanged;
-- Create/Open success atomically exposes name, canonical `manifestProjectId`, ref/head, document, and correct read-only/readwrite capabilities; same-name/different-id fixtures—including equal default prefix/suffix with a differing middle—produce distinct transition-aware compact tokens and full expanded/accessibility identity;
+- Create/Open success atomically exposes name, exact raw canonical `manifestProjectId`, ref/head, document, and correct read-only/readwrite capabilities;
+- the pure formatter visits `charCodeAt(i)` units, emits only permitted literal ASCII or uppercase fixed-width `\uXXXX` atoms, encodes surrogate pairs as two atoms, and never normalizes/trims/case-folds/hashes/parses;
+- every required same-name/distinct-id fixture produces different actual visible ASCII compact tokens, including both default-ignorable pairs and the equal-prefix/suffix middle difference; abbreviation never splits an atom and CSS cannot hide the distinguishing atom/length;
+- expanded and compact identities expose project name plus the complete escaped id in their actual accessible name/description without `title`; markup-looking/RTL/bidi/control/space/backslash/surrogate/max-length cases render inertly in LTR-isolated monospace;
 - project preview/return changes and restores session kind without losing project identity, and exposes `projectDirty = previewReturn.dirty` while active `dirty = false`;
 - no-project snapshots expose `projectDirty = null`; ordinary project snapshots expose `projectDirty = dirty`;
 - `hasDiscardableChanges` equals `dirty || projectDirty === true` in temporary/project/preview states;
@@ -497,7 +538,7 @@ No backend, cloud state, telemetry, handle persistence, localStorage, schema mig
 - Create is capability-invalid during Preview until Return; Open Project/Open temporary remain guarded context switches;
 - temporary open clears project identity exactly as today;
 - hostile/RTL/very-long `displayLabel` values remain untrusted strings and never enter source/evidence/path/confidence/DOM identifiers;
-- no new identity/status state is serialized or fed into project/document/export/autosave text;
+- no new identity/status state is serialized or fed into project/document/export/autosave text; exact raw-id persistence bytes compare unchanged before and after presentation;
 - existing permission, repair, preview, autosave, export destination, and conflict tests remain unchanged or gain presentation-only assertions.
 
 Deferred lifecycle harnesses make every fallible stage independently controllable:
@@ -510,12 +551,16 @@ Deferred lifecycle harnesses make every fallible stage independently controllabl
 
 The discard matrix is parameterized across every capability-valid Create/Open/Open-temporary surface and outcome:
 
-| Active Preview/document `dirty` | Underlying `projectDirty` | Confirmation meaning |
-| --- | --- | --- |
-| false | false | no prompt; invoke privileged action directly |
-| true | false | name loss of transient Preview/document view only |
-| false | true | name loss of underlying project layout/view only |
-| true | true | name both independent losses |
+| `sessionKind` | `dirty` | `projectDirty` | Confirmation meaning |
+| --- | --- | --- | --- |
+| `example` / `temporary` | false | `null` | no prompt; invoke privileged action directly |
+| `example` / `temporary` | true | `null` | name active-document view loss once |
+| `project` | false | false | no prompt; invoke privileged action directly |
+| `project` | either alias true | either alias value | name one ordinary-project layout/view loss; never duplicate the alias |
+| `project-preview` | false | false | no prompt; invoke privileged action directly |
+| `project-preview` | true | false | name transient Preview view loss only |
+| `project-preview` | false | true | name underlying project layout/view loss only |
+| `project-preview` | true | true | name both independent losses once each |
 
 For every row, cancel proves zero picker calls and exact state/focus preservation; accepted picker cancellation/failure proves the old complete session remains; success proves one picker call in the original activation and one atomic new-session commit. Return is tested separately: it discards active Preview view changes intentionally, invokes no picker, and restores retained project view/dirty.
 
@@ -538,10 +583,10 @@ Table-driven tests exercise the pure shared derivation, including contradictory/
 - cancel/failure keeps rail visible, focus stable, and state unchanged;
 - Create and Open success keep rail expanded and reveal collapse;
 - collapse removes width; reopen restores width; focus lands on the specified control both ways;
-- `aria-controls`, `aria-expanded`, named regions, accessible full project name/id, short visible project-id discriminator, and hidden-tab order are correct;
+- `aria-controls`, presentation-truthful `aria-expanded`, named regions, accessible project name plus full escaped id, labeled full expanded escape, labeled collision-aware compact token, and hidden-tab order are correct;
 - expanded and compact surfaces render the same compositional labels from the table and the same Return → Repair → Enable → Save critical action;
 - project access read-only and semantic document read-only remain separately named; preview shows the underlying project's dirty label when applicable;
-- hostile/RTL/long labels render as inert `<bdi dir="auto">` text with a full accessible value and no markup/selector/path effects;
+- hostile/RTL/long names render as inert `<bdi dir="auto">` text; every escaped-id fixture renders as inert monospace `<bdi dir="ltr">` (or equivalent isolation), actual accessibility does not depend on `title`, and neither raw nor escaped strings have markup/selector/ref/path/command/persistence effects;
 - recovery and corrupt-autosave status remain discoverable while collapsed without reading `message`;
 - invalid temporary JSON, Save conflict, and permission denial show correct action-specific errors while global provenance/coverage/unresolved/privacy/filter/read-only banners remain visible, accessible, and geometrically unobscured in wide/narrow expanded/collapsed states;
 - autosave/failure/permission/dirty/recovery/preview/repair updates preserve the identical focused rename/select element, caret/selection, typed value, type-ahead, and IME composition;
@@ -587,6 +632,10 @@ At `1680x1000`, DPR 1 and DPR 2:
 - opening Project removes/suppresses the Explorer grid column without mutating its preference, overlays the reclaimed canvas edge, and leaves Details according to its docked preference;
 - closing Project restores Explorer and the exact opener/focus destination;
 - hostile/max-status content remains contained in the approximately 232px overlay and banners are not physically occluded.
+- explicit evidence flow at `1663px`: begin with Explorer preference open and Details docked; select an evidence-bearing edge and record its identity, confidence, and ordered `.evidence` `path:line` values;
+- open Project and prove its opener reports `aria-expanded="true"`, Explorer presentation/grid column is absent and its opener truthfully reports `aria-expanded="false"` while the stored Explorer preference remains open;
+- while Project overlays the reclaimed start edge, inspect still-docked Details and prove the same edge remains selected with identical confidence and identical ordered `.evidence` `path:line`;
+- close Project, prove its opener reports `aria-expanded="false"`, Explorer is restored from the retained preference with `aria-expanded="true"`, selection/evidence remain identical, and focus returns to the exact visible Project opener.
 
 `1200px` Hybrid and `1199px` Narrow boundary:
 
@@ -652,12 +701,14 @@ Evidence accompanying the final review must include:
 - before/after serialized viewport values and selection;
 - lifecycle notification traces for opposite-order A/B candidates proving one complete session per observation;
 - discard-matrix confirmation copy, trusted-activation state, picker/write call counts, and cancel/failure/success snapshots;
+- escaped-identity fixture outputs, compared compact-token ASCII/difference assertions, full associated accessible descriptions, inert DOM proof, non-use boundary checks, and unchanged raw persistence bytes;
 - ARIA/focus assertions rather than screenshots alone;
 - identical form-element/caret/value/composition evidence across autosave and failure notifications;
 - real pointer success after both transitions;
 - compositional access/document/dirty/preview/repair/recovery status assertions and underlying `projectDirty` during preview;
 - action-specific errors coexisting with dirty-source, coverage, unresolved, privacy/filter/read-only banners, plus accessibility and `elementFromPoint` geometry at wide/narrow states;
-- post-reflow Details evidence showing expected confidence and `.evidence` `path:line` after the narrow rail closes;
+- post-reflow Details evidence showing expected confidence and `.evidence` `path:line` after the Narrow rail closes;
+- the `1663px` Hybrid edge-selection trace across Project open/close, including retained Explorer preference versus truthful presentation `aria-expanded`, docked Details, identical confidence/evidence, restored Explorer, and exact focus;
 - console/page-error collection;
 - DPR 1/2 p50/p95/worst timing through final painted/interactive collapse/reopen state plus 20+ rapid-toggle final evidence;
 - transition traces at 1199/1200/1663/1664 and canonical 1680/1024/800 showing independent preferences, active overlay, opener/focus, project-id/null-project transitions;
@@ -685,7 +736,7 @@ If live evidence finds a renderer-port or adapter defect, keep the rail implemen
 - Compact context duplicates presentation of one action; drift is prevented by requiring both surfaces to consume one derived presentation object and one handler registry.
 - Project access mode and semantic document read-only are independent axes and are easy to mislabel in compact space; neither claims observed filesystem permission.
 - Repair, preview, recovery, permission revocation, project dirty, active-document dirty, and corrupt-autosave changes can arrive while the rail is collapsed; every transition must update all applicable accessible labels.
-- Untrusted project/file name/id text can be long, RTL, or markup-looking; text-node plus bidi isolation and a full accessible value are mandatory. Showing a manifest-id discriminator improves cognitive identity but exposes a project-local identifier.
+- Untrusted project/file names can be long, RTL, or markup-looking and require inert auto-direction isolation. Raw project ids may contain default-ignorables, bidi/control units, surrogates, backslashes, or markup-looking ASCII; only the injective escaped form may discriminate visibly/accessibly, with LTR monospace isolation, atom-safe abbreviation, associated full accessibility, and inert text construction. Showing it improves cognitive identity but exposes a project-local identifier.
 - Concatenated `message` copy is not structured state; adding another project warning without a narrow field must not tempt the UI to parse it or trigger a generic-notification rewrite.
 - The atomic loaded-state install primitive is safety-critical: any notification inside its install callback would recreate the document/project cross-read race.
 - Epoch guards prevent stale UI commits, but forced overlapping privileged operations may still complete against their immutable captured project; tests must distinguish a safe old-project write from a forbidden cross-project write.
@@ -714,37 +765,48 @@ Current record:
 
 Historical round-2 gate: `SATISFIED_3_OF_3`.
 
-Round-3 transverse refinements:
+Round-3 transverse refinements presented for review:
 
-1. expose project name plus short visible/full accessible canonical manifest `project.id`, without root paths or new persistence;
-2. replace the 1440 proposal with Wide `>=1664`, Hybrid `1200..1663`, and Narrow `<1200`, including temporary Explorer suppression in Hybrid.
+1. expose project name plus a compact visible/full accessible canonical manifest `project.id`, without root paths or new persistence;
+2. replace the 1440 proposal with Wide `>=1664`, Hybrid `1200..1663`, and Narrow `<1200`, including temporary Explorer suppression in Hybrid and retained Details/evidence reachability.
 
-Renewed record:
+Round-3 constructive record against `cf1a83075156deea1f531cbf93c1fbcf7d3287ed`:
 
-- Graph/runtime owner: `SUPPORT` for both refinements. They close same-name identity and intermediate-width invariants without broadening filesystem/schema semantics.
-- Core lead: `SUPPORT` through the explicit coordinator dispositions selecting manifest id and the three-band model.
-- Extraction/evidence owner: `PENDING_ROUND_3_REVIEW` for the refined identity and evidence/coverage reachability behavior.
+- Graph/runtime owner: `SUPPORT` for both refinements.
+- Core lead: prior `SUPPORT` through the coordinator dispositions selecting manifest id and the three-band model.
+- Extraction/evidence owner: responsive/evidence refinement `SUPPORT`; identity refinement `DISSENT` on one P1 because distinct contract-valid ids containing default-ignorable code units could render identically even when the raw substring was fully expanded.
 
-Renewed constructive gate: `SATISFIED_2_OF_3`, subject to remaining valid through round-3 review. Any invariant-breaking counterexample or measurement-driven departure reopens the relevant choice.
+The responsive/evidence choice remains accepted. The dissented raw-Unicode identity choice is superseded—not waived—by the binding core representation in this revision. The three-round limit was reached, so the core lead arbitrated the remaining valid plan choice rather than opening a fourth design round.
 
-## Independent premortem record
+## Independent premortem and arbitration record
 
-- `SEM-P1-01` lifecycle A/B mismatch: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` via old-session visibility, local candidates, synchronous aggregate commit, busy/capability state, epoch/session tokens, and opposite-order tests.
-- `SEM-P1-02` Preview hides dirty-project discard risk: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` via authoritative `hasDiscardableChanges`, loss-specific synchronous confirmation, four-combination cancel/failure/success tests, and explicit Return semantics.
-- `SEM-P1-03` false filesystem-permission label: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` by using truthful `Project access` copy and retaining the filesystem permission no-change boundary.
-- `SEM-P1-04` failures erase/mislabel trust banners: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` via separate action-error state/host, operation-specific copy, coexistence/geometry/accessibility tests, and no `bannerHost.clear()` from errors.
-- `SEM-P1-05` same-name projects lack identity: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` via name plus short visible/full accessible manifest-id discriminator, bidi-safe untrusted rendering, no root path/command-key/persistence use, and renewed constructive support.
-- `SEM-P2-01` corrupt-autosave status can stale: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` with current-condition lifetime and successful rewrite/commit/session clear tests.
-- `SEM-P2-02` Create-from-Preview contradicts capabilities: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW`; Create remains absent until Return, while guarded Open Project/Open temporary remain available.
-- `RES-P1-1` Preview context switch silently discards underlying dirty project: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` through the same discard/activation contract plus real UI/FSA call-count and state-preservation tests.
-- `RES-P1-2` rebuilt form loses focus and shortcuts write files: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` via mandatory stable DOM, caret/type-ahead/IME preservation, complete interaction-target predicate, Escape-first handling, and asynchronous notification tests.
-- `RES-P2-1` incomplete three-overlay/preferences state: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` via independent preferences, one active overlay, exhaustive transitions, exact opener focus, project/null transitions, and rapid boundary resize tests.
-- `RES-P2 hybrid-band decision`: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` with the coordinator-selected 1664/1200 model and Hybrid Explorer suppression without preference mutation.
-- `RES-P2-2` unfalsifiable 100ms gate: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` with final rect/backing/paint/interaction endpoint, p50/p95/worst, rAF coalescing/destroy cleanup, 20+ rapid toggles, and immediate pointer proof.
-- `RES-P2-3` DPR/occlusion/overflow false greens: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` with DPR 2, rail-aware unobscured geometry, `elementFromPoint`, rail/control containment, and hostile/max-status cases.
-- `RES-P2-4` privileged-action coverage gaps: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` with trusted activation/call counts for every listed picker/permission/compact action and injected cancel/denial/revocation/conflict/throw paths.
-- `RES-P2-5` Escape tests begin outside overlays: `PLANNED_CLOSURE_ROUND_3_AWAITING_REVIEW` from first/textbox-or-select/last controls in each overlay, ending at the exact visible opener across breakpoints.
+Round-3 reports against `cf1a83075156deea1f531cbf93c1fbcf7d3287ed`:
 
-Both independent verdicts remain `BLOCKING_PREMORTEM_FINDINGS`. A documented closure is not a cleared finding: no production implementation may start until each reviewer explicitly re-verifies this revision as having no unresolved P0/P1. Maximum three review/review-response rounds apply before arbitration or escalation to the core lead.
+- resilience final report: `NO_BLOCKING_PREMORTEM_FINDINGS`; all prior RES findings were cleared or superseded at plan level;
+- semantic final report: six prior findings cleared; `SEM-P1-05` remained; final verdict `BLOCKING_PREMORTEM_FINDINGS`;
+- extraction and semantic independently reproduced the same accepted P1: distinct contract-valid ids containing default-ignorable code units can render identically even with the raw differing substring fully expanded.
 
-Readiness verdict: `NOT_READY_FOR_IMPLEMENTATION`. Round-3 findings are in resolution and await both independent re-verification verdicts.
+Semantic dispositions:
+
+- `SEM-P1-01` lifecycle A/B mismatch: `CLEARED_BY_SEMANTIC_ROUND_3` through old-session visibility, local candidates, synchronous aggregate commit, busy/capability state, epoch/session tokens, and opposite-order tests.
+- `SEM-P1-02` Preview hides dirty-project discard risk: `CLEARED_BY_SEMANTIC_ROUND_3` through authoritative `hasDiscardableChanges`, loss-specific synchronous confirmation, cancel/failure/success tests, and explicit Return semantics. Core clarification now also deduplicates ordinary-project aliases by session kind.
+- `SEM-P1-03` false filesystem-permission label: `CLEARED_BY_SEMANTIC_ROUND_3` through truthful `Project access` copy and the filesystem permission no-change boundary.
+- `SEM-P1-04` failures erase/mislabel trust banners: `CLEARED_BY_SEMANTIC_ROUND_3` through separate action-error state/host, operation-specific copy, coexistence/geometry/accessibility tests, and no `bannerHost.clear()` from errors.
+- `SEM-P2-01` corrupt-autosave status can stale: `CLEARED_BY_SEMANTIC_ROUND_3` through current-condition lifetime and successful rewrite/commit/session-clear tests.
+- `SEM-P2-02` Create-from-Preview contradicts capabilities: `CLEARED_BY_SEMANTIC_ROUND_3`; Create remains absent until Return, while guarded Open Project/Open temporary remain available.
+- `SEM-P1-05` same-name projects lack reliable identity: `CLOSED_BY_BINDING_CORE_ARBITRATION_NOT_WAIVED`. The core lead accepted the reproduced P1 and replaced raw-Unicode discrimination with the injective exact-UTF-16 ASCII escape, atom-safe collision token, full visible expanded escape, full associated accessibility, inert LTR/monospace rendering, and unchanged raw/no-key/no-path/no-persistence boundaries specified above.
+
+Resilience's plan-level clear does not remove its residual executable-gate conditions. Each remains mandatory after any implementation-readiness authorization:
+
+- `RES-P1-1` retains real UI/FSA discard-copy, trusted-activation, call-count, and exact cancel/failure/state-preservation tests, including session-kind deduplication.
+- `RES-P1-2` retains stable mounted DOM, caret/type-ahead/IME preservation, full interaction-target suppression, Escape-first handling, and asynchronous-notification tests.
+- `RES-P2-1` retains independent preferences, exactly one active overlay, exhaustive transitions, exact opener focus, project/null transitions, and rapid boundary-resize tests.
+- `RES-P2 hybrid-band decision` retains the 1664/1200 model, Explorer suppression without preference mutation, plus the explicit 1663 edge/confidence/evidence/Details/restoration/focus/`aria-expanded` flow.
+- `RES-P2-2` retains final rect/backing/paint/interaction endpoints, p50/p95/worst reporting, rAF coalescing/destroy cleanup, 20+ rapid toggles, and immediate pointer proof.
+- `RES-P2-3` retains DPR 2, rail-aware unobscured geometry, `elementFromPoint`, rail/control containment, and hostile/max-status cases.
+- `RES-P2-4` retains trusted activation/call counts for every listed picker/permission/compact action and injected cancel/denial/revocation/conflict/throw paths.
+- `RES-P2-5` retains Escape tests from first, textbox-or-select, and last controls in each overlay, ending at the exact visible opener across breakpoints.
+
+Binding core disposition: the identity P1 is valid, accepted, and closed in the RFC by arbitration; it is not accepted risk and not a waiver. This plan now awaits an exact conformance inspection by the core lead. Core conformance may produce a separate implementation-readiness decision; it does not itself replace either red team's independent final executable gate.
+
+Readiness verdict: `AWAITING_CORE_CONFORMANCE`. No production implementation is authorized by this revision.
