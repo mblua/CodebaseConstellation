@@ -653,8 +653,8 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   const compactRepair = button('Repair project', handlers.repairProject);
   const compactEnable = button('Enable editing', handlers.enableEditing);
   const compactSave = button('Save', handlers.saveProject);
-  const compactRecovery = button('Recovery available', () =>
-    setSurface('project', true, projectShow),
+  const compactRecovery: HTMLButtonElement = button('Recovery available', () =>
+    setSurface('project', true, compactRecovery),
   );
   const compactCritical = el('span', { class: 'project-compact-action' }, [
     compactReturn,

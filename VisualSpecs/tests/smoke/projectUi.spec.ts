@@ -428,7 +428,12 @@ for (const projectAccess of ['editable', 'readonly'] as const) {
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
     try {
-      await page.setViewportSize({ width: 1680, height: 1000 });
+      const expectedBand = projectAccess === 'editable' ? 'hybrid' : 'narrow';
+      await page.setViewportSize(
+        projectAccess === 'editable'
+          ? { width: 1663, height: 900 }
+          : { width: 800, height: 800 },
+      );
       await boot(page);
 
       const ownerA = JSON.parse(sampleDoc()) as Record<string, unknown>;
@@ -512,9 +517,43 @@ for (const projectAccess of ['editable', 'readonly'] as const) {
         exact: true,
       });
       await expect(compactRecovery).toBeVisible();
+      const genericProjectShow = page.locator('#show-project-rail');
+      const focusRoundTripState = projectSafetyState(await readProjectState(page));
+      const focusRoundTripRaw = await rawDocument(page);
+      const focusRoundTripViewport = await viewport(page);
       await compactRecovery.click();
       await expect(page.locator('#project-rail')).toBeVisible();
+      await expect(
+        page.getByRole('button', { name: 'Collapse project rail', exact: true }),
+      ).toBeFocused();
+      await expect.poll(() => readProjectLayout(page)).toMatchObject({
+        band: expectedBand,
+        activeOverlay: 'project',
+        projectOpen: true,
+      });
       await expect(exportRecovery).toBeHidden();
+
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#project-rail')).toBeHidden();
+      await expect(compactRecovery).toBeVisible();
+      await expect(compactRecovery).toBeFocused();
+      await expect(genericProjectShow).not.toBeFocused();
+      await expect.poll(() => readProjectLayout(page)).toMatchObject({
+        band: expectedBand,
+        activeOverlay: null,
+        projectOpen: false,
+      });
+      expect(projectSafetyState(await readProjectState(page))).toEqual(focusRoundTripState);
+      expect(await rawDocument(page)).toEqual(focusRoundTripRaw);
+      expect(await viewport(page)).toEqual(focusRoundTripViewport);
+      await expect(exportRecovery).toBeHidden();
+
+      await compactRecovery.click();
+      await expect(page.locator('#project-rail')).toBeVisible();
+      await expect.poll(() => readProjectLayout(page)).toMatchObject({
+        band: expectedBand,
+        activeOverlay: 'project',
+      });
 
       const guardedState = projectSafetyState(await readProjectState(page));
       const guardedRaw = await rawDocument(page);
