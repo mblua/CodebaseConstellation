@@ -1,12 +1,12 @@
 # Plan #7: add a collapsible Project Rail
 
-Status: `DRAFT_AWAITING_CONSTRUCTIVE_VALIDATION_AND_PREMORTEMS`
+Status: `DRAFT_AWAITING_PREMORTEMS`
 
 Issue: <https://github.com/mblua/CodebaseConstellation/issues/7>
 
 Artifact owner: `vs-graph-runtime-dev`
 
-Delivery path: Full. The selected Project Rail changes the shell hierarchy, responsive drawer model, focus order, application-facing session identity, and the Canvas2D host's live dimensions. No canonical graph semantics or persistence formats change, but readiness requires constructive 2-of-3 support plus independent semantic and resilience premortems before production implementation.
+Delivery path: Full. The selected Project Rail changes the shell hierarchy, responsive drawer model, focus order, application-facing session identity, and the Canvas2D host's live dimensions. No canonical graph semantics or persistence formats change. All three constructive owners support the five transverse decisions; production readiness now requires independent semantic and resilience premortems with no unresolved P0/P1 finding.
 
 Base commit: `271ae86b5b064fa6a642a0cfb313f38e597031fb` (`feat: evolve CodebaseGuide into Visual Specs (#6)`).
 
@@ -95,22 +95,25 @@ The rail then renders only the controls applicable to its state:
 
 Create/Open/Open-temporary remain available as explicitly secondary context-switch actions and retain the existing dirty confirmation and picker activation paths.
 
+State labels are independent facts rather than one exclusive summary. The vocabulary includes `Project permission: read-only`, `Document: read-only`, `Unsaved project changes`, `Preview`, `Repair needed`, `Recovery available`, and `Corrupt autosave ignored`; every applicable label renders, including simultaneous combinations, without fabricating mutually exclusive source states. The critical action remains singular and ordered, but choosing that action never suppresses another true state label.
+
 ### Project selected, rail collapsed
 
 The docked rail contributes zero layout width and no focusable descendants. Stable workspace chrome outside it contains:
 
 - `Show project rail`;
 - full accessible project name, visually truncatable;
-- text state (`Read-only`, `Editable`, `Unsaved changes`, `Repair needed`, or `Preview`);
-- at most one critical action with precedence: Return, Repair, Enable editing, then Save for an editable dirty project;
+- every applicable text state, composed from the shared presentation model (`Project permission: read-only` or `Project permission: editable`, `Document: read-only`, `Unsaved project changes`, `Repair needed`, `Preview`, `Recovery available`, and `Corrupt autosave ignored`);
+- at most one critical action with precedence: Return, Repair, Enable editing, then Save when `canWriteProject && projectDirty`;
 - a non-primary `Recovery available` indication when pending autosave exists; recovery choices remain in the reopened rail.
 
-Compact and expanded actions call the same `ProjectController` methods and share capability checks, permission handling, dirty guards, and conflict behavior. The UI does not duplicate application or persistence semantics.
+Compact and expanded surfaces consume one shared derived status/action model. They call the same `ProjectController` handlers and share capability checks, permission handling, dirty guards, and conflict behavior. The UI does not duplicate application or persistence semantics.
 
 ### Context changes
 
 - cancellation/failure leaves the presentation unchanged;
-- read-only to readwrite, clean/dirty, save, permission revocation, repair, preview, and return preserve the user's rail preference while updating compact state;
+- read-only to readwrite, clean/dirty, save, permission revocation, repair, preview, and return preserve the user's rail preference while updating every applicable compact-state label;
+- entering project preview keeps the preview document's active `dirty` fact separate from an explicitly exposed underlying `projectDirty` fact, so a dirty project never appears clean while its export/import copy is being previewed;
 - a different `projectKey` expands the rail so the new identity is explicit;
 - returning to temporary/no-project mode expands the start region;
 - a full reload resets to expanded; no repository/project/view data stores the preference.
@@ -131,7 +134,7 @@ The initial slice resets expanded after reload. Same-tab reload persistence via 
 
 ### Structured session identity in the application layer
 
-Do not derive `Example`, `Temporary`, `Project`, or `Project preview` from mutable message copy. Extend the UI-facing `ProjectControllerState` with a structured session discriminator and source label, initialized by the composition root for the bundled AgentsCommander document and updated by existing load/preview/return transitions.
+Do not derive `Example`, `Temporary`, `Project`, or `Project preview` from mutable message copy. Extend the UI-facing `ProjectControllerState` with a structured session discriminator and `displayLabel`, initialized by the composition root for the bundled AgentsCommander document and updated by existing load/preview/return transitions.
 
 Proposed shape (names may be refined without changing meaning):
 
@@ -140,14 +143,38 @@ type SessionKind = 'example' | 'temporary' | 'project' | 'project-preview';
 
 interface ProjectControllerState {
   sessionKind: SessionKind;
-  sourceName: string;
+  displayLabel: string;
   // existing project/access/capability fields remain authoritative
 }
 ```
 
-This is application presentation state only. It does not modify contract, schema, model, projection, extractor output, or stored JSON. It adds a small explicit state surface in exchange for eliminating message parsing and preventing the UI from claiming that the bundled example is a picked temporary file.
+`displayLabel` is untrusted presentation identity only. It changes only after the candidate document/project has validated and the corresponding load/open transition succeeds. It renders through text nodes, preferably inside `<bdi dir="auto">`, with its full accessible value even when visually truncated. It must never become canonical `model.source`, evidence, a filesystem path, a DOM id/class, confidence, or project/document/export/autosave data.
 
-This is a transverse decision because it changes an application-facing state interface and the displayed provenance category; it requires constructive validation.
+This is application presentation state only. It does not modify contract, schema, model, projection, extractor output, or stored JSON. It adds a small explicit state surface in exchange for eliminating message parsing and preventing the UI from claiming that the bundled example is a picked temporary file. This transverse decision has constructive 3-of-3 support in round 2.
+
+### One shared derived project presentation model
+
+Add only the narrow structured facts the UI cannot derive truthfully today:
+
+```ts
+interface ProjectControllerState {
+  // `dirty` remains the active document/view dirty fact.
+  projectDirty: boolean | null;
+  corruptAutosaveIgnored: boolean;
+  // existing access/readOnly/previewing/needsRepair/pendingAutosave/capabilities remain authoritative
+}
+```
+
+`projectDirty` is `null` with no underlying project. With an open project it is `previewReturn?.dirty ?? dirty`, so preview can expose the saved private return fact without claiming the preview document itself is dirty. `corruptAutosaveIgnored` lets compact UI expose the existing corrupt-autosave case without inferring structure from concatenated mutable `message`; it is a narrow status, not a generic notification system.
+
+A pure UI derivation consumes the complete `ProjectControllerState` once and produces:
+
+- a list/set of all applicable status keys and fixed accessible labels;
+- at most one critical action key using Return → Repair → Enable editing → Save precedence;
+- recovery/corrupt-autosave affordance state;
+- capability-derived visibility for secondary actions.
+
+Expanded and compact renderers consume that same object. Action keys map to one shared handler registry backed by the existing controller methods. Neither surface re-derives facts, parses `message`, or implements its own permission/dirty/conflict behavior.
 
 ### No width animation in the first implementation
 
@@ -163,15 +190,17 @@ This gives up keeping the same world point at the same absolute screen coordinat
 
 ### Expanded-rail canvas width is an explicit product tradeoff
 
-The selected desktop composition adds approximately 232 px beside Explorer and Details. With the prototype dimensions (rail ~232, Explorer ~264, Details ~340), a 1680 px viewport leaves roughly 840 px for the canvas before borders. The current no-rail acceptance threshold is `>900px`.
+The current docked CSS tokens are Explorer `290px` and Details `380px`; round 1's roughly 840 px arithmetic used prototype targets of about `264px` and `340px`, not the implementation defaults. A `232px` rail beside the real defaults would leave only `778px` before any remaining chrome, so it cannot substantiate the accepted expanded budget.
+
+Round 2 makes the width choice explicit: retain the current `290px` Explorer and `380px` Details tokens unchanged, and start the docked Project Rail at `192px` (border-box). This leaves a nominal `818px` canvas at 1680 and gives up 40 px of the prototype rail width; long identity text wraps or truncates while retaining its full accessible `<bdi>` value. The narrow overlay may use a separate approximately `232px` token because it does not participate in docked canvas arithmetic.
 
 Proposed budget:
 
 - `1680x1000`, rail expanded: unobscured canvas `>=800px`;
-- `1680x1000`, rail collapsed: unobscured canvas `>900px` and gains approximately the full rail width;
+- `1680x1000`, rail collapsed: unobscured canvas `>900px` (nominally `1010px`) and gains approximately the full measured `192px` rail width;
 - the canvas remains `>300px` tall and has nonzero ink coverage in both states.
 
-This knowingly relaxes the wide expanded-state width budget in exchange for selected Project Rail visibility. The alternative is to undock/close Details whenever the rail is expanded, which preserves `>900px` but weakens prototype B and couples otherwise independent regions. The proposed two-mode budget needs constructive 2-of-3 support before implementation.
+Playwright must measure rendered bounding boxes rather than accept the arithmetic. Do not silently reduce Explorer/Details widths. If the real expanded canvas is below `800px`, stop and record one explicit choice for review: narrow the new rail with accessible-content proof, deliberately change an existing panel token with its own regression evidence, undock a panel, or accept a revised product budget. The accepted two-mode outcomes have constructive 3-of-3 support; a measurement-driven departure reopens that decision.
 
 ### Narrow layout uses inline onboarding and one overlay drawer
 
@@ -182,7 +211,7 @@ Use a separate measured Project Rail docking threshold (initial proposal: `1440p
 - With a project at those sizes, the expanded rail is an edge overlay/drawer; when closed, compact context remains outside it.
 - Project Rail, Explorer, and Details are mutually exclusive only as overlays. Desktop preferences stay independent.
 
-This introduces responsive presentation state in exchange for retaining a real map at tablet sizes. It is a transverse product/layout decision requiring constructive validation.
+This introduces responsive presentation state in exchange for retaining a real map at tablet sizes. This transverse product/layout decision has constructive 3-of-3 support.
 
 ## UI-state model
 
@@ -208,6 +237,16 @@ Derived behavior:
 
 No new global shortcut is required. A later shortcut must avoid the existing F/E/C/R/S/+/-/[/] bindings and be separately documented.
 
+## Global trust, warning, and evidence surfaces
+
+`bannerHost` remains stable workspace chrome outside the hideable Project Rail and outside any narrow overlay subtree. Rail collapse, overlay close, and responsive breakpoint changes must not hide it, apply `aria-hidden` to it, move it behind an overlay, or remove it from the accessibility tree.
+
+The following existing global facts remain visible and accessible in every expanded/compact rail state: dirty extraction source, degraded coverage, unresolved relations, semantic document read-only, privacy/validation warnings, refresh-loss reporting, and active filter masking. These are graph/document trust surfaces, not project-navigation content.
+
+Project-scoped warnings remain distinct. `pendingAutosave` and the narrow `corruptAutosaveIgnored` structured fact feed the shared project presentation model, so recovery and corrupt-autosave status remain discoverable while collapsed without parsing `message`. The full existing actions/copy can remain in the expanded rail/status path; this issue does not introduce a generic notification framework.
+
+Evidence reachability is also invariant under chrome changes: after a real post-reflow node or edge selection, closing a narrow Project Rail and opening Details preserves that selection and exposes the selected relation/node's expected confidence plus `.evidence` `path:line` entries.
+
 ## Focus and ARIA contract
 
 - Project Rail is a named `<aside id="project-rail" aria-label="Project">` or equivalent region, not another Explorer and not one giant toolbar.
@@ -218,8 +257,8 @@ No new global shortcut is required. A later shortcut must avoid the existing F/E
 - A narrow overlay closes on Escape and returns focus to its opener.
 - Any responsive/state transition that hides focused content first selects a stable visible destination; focus must never fall silently to `body`.
 - While open, Project context precedes map controls in DOM/Tab order. While closed, compact context precedes map controls.
-- Project name truncation retains a full accessible name/title.
-- Read-only, Editable, Unsaved, Repair, Preview, and Recovery have text, not color/icon-only meaning.
+- Project/session label truncation retains the full untrusted text value in a `<bdi dir="auto">` or equivalent isolated text-node presentation and a full accessible name/title.
+- Permission read-only, semantic document read-only, Editable, Unsaved, Repair, Preview, Recovery, and corrupt-autosave facts compose as text; none relies on color/icon-only meaning or suppresses another applicable fact.
 - Project state changes use the existing polite status path or a narrowly scoped polite region; canvas resize itself is not announced.
 - Explorer and Details retain their existing labels, `aria-expanded`, shortcuts, and narrow exclusivity behavior.
 
@@ -250,10 +289,15 @@ If browser evidence reveals that the existing port/adapter cannot meet the invar
 - P1: the rail and Explorer are distinct named regions; neither toggle mutates the other's desktop preference or graph data.
 - P1: no-project Create/Open is visible and precedes map controls at every representative viewport.
 - P1: collapsed project state always exposes reopen, project identity/state, and Return/Repair/Enable/Save when applicable.
+- P1: status labels are conjunctive: permission read-only, semantic document read-only, project dirty, preview, repair, recovery, and corrupt-autosave facts all remain visible when simultaneous; selecting one critical action by precedence never suppresses a true label.
+- P1: preview exposes the underlying project's `projectDirty` value independently from the active preview document's `dirty` value, including after permission/repair/recovery transitions.
+- P1: global dirty-source, coverage, unresolved, semantic-read-only, privacy/validation, refresh-loss, and filter banners remain outside the hideable rail, visible, and in the accessibility tree at wide and narrow viewports.
+- P1: corrupt-autosave/recovery project warnings remain discoverable from compact state through narrow structured facts; no surface parses mutable message copy.
 - P1: hidden rail controls are not tabbable and collapse/reopen never loses focus.
 - P1: repair and preview cannot expose write actions for the wrong document state.
 - P1: rail toggles do not change viewport values, selection, expansion, pinned/dragged positions, filters, or dirty state.
 - P1: canvas backing size and pointer mapping are correct immediately after reflow; node/edge hit testing and drag remain correct.
+- P1: closing a narrow rail and opening Details after a post-reflow selection preserves selection and exposes expected confidence plus `.evidence` `path:line` entries.
 - P1: project/filesystem commands retain direct user activation, permission, freshness, conflict, backup, and safe-open behavior.
 - P2: a docked collapse reclaims the complete rail width with no empty gutter.
 - P2: responsive presentation does not cause document horizontal scrolling or more than one canvas overlay.
@@ -270,12 +314,16 @@ Expected production edits:
   - shell composition, Project Rail DOM, compact context, conditional control groups;
   - local rail preference and narrow overlay state;
   - focus transfer, Escape handling, overlay exclusivity, explicit resize scheduling;
-  - reuse of existing ProjectController command handlers.
+  - one pure shared status/action derivation consumed by expanded and compact surfaces;
+  - reuse of one handler registry backed by existing ProjectController commands;
+  - keep global trust/evidence banners outside the rail and every overlay subtree.
 - `VisualSpecs/src/styles.css`
   - outer rail/workspace layout, compact context, state labels, conditional groups;
   - docked/inline/overlay responsive presentation and overflow constraints.
 - `VisualSpecs/src/app/projectController.ts`
-  - UI-facing structured session identity only; no persistence behavior changes.
+  - UI-facing `sessionKind`/untrusted `displayLabel` identity;
+  - presentation-only `projectDirty` derivation and narrow `corruptAutosaveIgnored` fact;
+  - no persistence behavior changes and no generic notification redesign.
 - `VisualSpecs/src/main.ts`
   - initialize the bundled session as `Example / AgentsCommander`.
 
@@ -304,6 +352,8 @@ Do not change:
 - portable Visual Specs contract or JSON schema;
 - contract validation/import/export semantics;
 - canonical graph model, hierarchy, domain commands, layout engine, projection, aggregated connections, evidence, or confidence semantics;
+- canonical `model.source`, evidence/path identity, confidence, or extraction provenance from untrusted `displayLabel`;
+- meaning, derivation, or placement in the accessibility tree of existing global trust/evidence banners;
 - renderer port shape or Canvas2D coordinate convention;
 - filesystem adapter, File System Access permission model, project manifest/current revision protocol, backup ordering, freshness/conflict handling, repair semantics, import/export destinations, or autosave format;
 - extractor behavior or AgentsCommander dataset content;
@@ -315,13 +365,13 @@ No backend, cloud state, telemetry, handle persistence, localStorage, schema mig
 
 ## Implementation sequence
 
-1. Obtain constructive review of this RFC. Resolve every blocking counterexample and record 2-of-3 support for transverse decisions.
+1. Freeze this round-2 plan as the 3-of-3 constructive input to the independent premortems; do not treat the constructive verdict as implementation readiness.
 2. Obtain independent semantic and resilience premortems. Do not start production UI code until both report no unresolved P0/P1 finding.
-3. Add the structured application session identity and focused `ProjectController` unit coverage.
+3. Add structured application session identity, `projectDirty`, the narrow corrupt-autosave fact, the shared presentation derivation, and focused unit coverage.
 4. Refactor shell construction so Project Rail/compact context precede a pure map toolbar while preserving direct click-to-picker call paths.
-5. Implement conditional rail groups for no-project, read-only, editable, repair, preview, recovery, and context-switch states using existing commands/capabilities.
+5. Implement conditional rail groups and compositional status labels for no-project, permission, semantic read-only, dirty, repair, preview, recovery, corrupt-autosave, and context-switch states using existing commands/capabilities.
 6. Implement local wide preference, narrow overlay state, project-key reset, focus transfer, Escape, ARIA, and Explorer/Details independence.
-7. Add outer layout and responsive CSS. Start without a width animation. Measure actual rail/Explorer/Details/canvas dimensions before freezing tokens.
+7. Add outer layout and responsive CSS with the explicit initial tokens: docked rail `192px`, narrow overlay approximately `232px`, existing Explorer `290px`, existing Details `380px`. Start without a width animation and measure actual rendered dimensions before accepting the result.
 8. Wire the post-layout `controller.resize()` call and verify the existing observer/adapter path; do not alter the port.
 9. Add focused browser tests for state transitions, focus/ARIA, layout width reclamation, viewport preservation, and real pointer interactions after reflow.
 10. Add representative responsive and visual evidence at all three canonical viewports.
@@ -333,13 +383,28 @@ No backend, cloud state, telemetry, handle persistence, localStorage, schema mig
 
 ### Application/unit
 
-- initial example snapshot exposes structured `example / AgentsCommander` identity;
-- picked standalone JSON changes identity to `temporary / <source name>`;
+- initial example snapshot exposes structured `example / AgentsCommander` identity through `displayLabel`;
+- a validated picked standalone JSON changes identity to `temporary / <display label>`; validation/cancel/failure leaves the prior label unchanged;
 - Create/Open success exposes project identity and correct read-only/readwrite capabilities;
-- project preview/return changes and restores session kind without losing project identity;
+- project preview/return changes and restores session kind without losing project identity, and exposes `projectDirty = previewReturn.dirty` while active `dirty = false`;
+- no-project snapshots expose `projectDirty = null`; ordinary project snapshots expose `projectDirty = dirty`;
+- corrupt autosave produces `corruptAutosaveIgnored = true` independently from `message`; clean/recovery autosave cases do not;
 - temporary open clears project identity exactly as today;
-- no new state is serialized or fed into export/autosave text;
+- hostile/RTL/very-long `displayLabel` values remain untrusted strings and never enter source/evidence/path/confidence/DOM identifiers;
+- no new identity/status state is serialized or fed into project/document/export/autosave text;
 - existing permission, repair, preview, autosave, export destination, and conflict tests remain unchanged or gain presentation-only assertions.
+
+Table-driven tests exercise the pure shared derivation, including contradictory/transitional capability snapshots so precedence cannot erase labels:
+
+| Simultaneous structured facts | Required compositional labels | Critical action |
+| --- | --- | --- |
+| permission read-only + semantic document read-only | `Project permission: read-only`; `Document: read-only` | Enable when capable |
+| permission editable + semantic document read-only + project dirty | `Project permission: editable`; `Document: read-only`; `Unsaved project changes` | none unless a safe capability is explicitly true |
+| permission read-only + project dirty + recovery | `Project permission: read-only`; `Unsaved project changes`; `Recovery available` | Enable when capable |
+| permission read-only + semantic document read-only + project dirty + preview + repair + recovery | all six corresponding labels | Return before Repair/Enable/Save |
+| repair + project dirty + recovery, without preview | `Repair needed`; `Unsaved project changes`; `Recovery available` plus permission/document facts | Repair before Enable/Save |
+| permission editable + project dirty, without preview/repair | `Project permission: editable`; `Unsaved project changes` | Save when capable |
+| corrupt autosave + any permission/document facts | `Corrupt autosave ignored` plus every other true label | unaffected by the warning |
 
 ### UI/project browser smoke
 
@@ -349,9 +414,13 @@ No backend, cloud state, telemetry, handle persistence, localStorage, schema mig
 - Create and Open success keep rail expanded and reveal collapse;
 - collapse removes width; reopen restores width; focus lands on the specified control both ways;
 - `aria-controls`, `aria-expanded`, named regions, accessible full project name, and hidden-tab order are correct;
-- compact state/action matrix covers read-only/Enable, editable-dirty/Save, repair/Repair, preview/Return, and recovery indication;
+- expanded and compact surfaces render the same compositional labels from the table and the same Return → Repair → Enable → Save critical action;
+- permission read-only and semantic document read-only remain separately named; preview shows the underlying project's dirty label when applicable;
+- hostile/RTL/long labels render as inert `<bdi dir="auto">` text with a full accessible value and no markup/selector/path effects;
+- recovery and corrupt-autosave status remain discoverable while collapsed without reading `message`;
+- global trust/evidence banners remain outside the rail, visible, and accessible while expanded and collapsed;
 - Project Rail and Explorer/Details toggle independently at wide sizes;
-- compact and expanded actions exercise the same real project-store harness paths.
+- compact and expanded actions exercise the same handler registry and real project-store harness paths.
 
 ### Renderer/interaction browser smoke
 
@@ -363,6 +432,7 @@ At `1680x1000`:
 - assert viewport values, selection, expansion, filters, and node position are unchanged;
 - click a known node using the post-reflow canvas rect;
 - click a known edge, zoom, pan, and drag a node with real pointer events;
+- after node and edge selection, open Details and assert expected confidence plus `.evidence` `path:line` content remains reachable;
 - reopen and repeat a representative hit test;
 - assert backing width tracks CSS width times DPR and ink coverage remains nonzero;
 - measure collapse/reopen duration against the 100 ms UI budget without a semantic derive/layout operation.
@@ -374,6 +444,7 @@ At `1680x1000`:
 - rail docked expanded and user-collapsible;
 - Explorer/Details recognizable;
 - expanded canvas `>=800px`, collapsed canvas `>900px`, height `>300px`;
+- dirty-source provenance, degraded coverage, and unresolved banners remain visible and in the accessibility tree with the rail both expanded and collapsed;
 - no document overflow.
 
 `1024x768`:
@@ -390,6 +461,8 @@ At `1680x1000`:
 - with a project, all three drawers are mutually exclusive;
 - one 232-ish px rail overlay leaves `>350px` unobscured map width;
 - with overlays closed, unobscured map width is `>700px`;
+- global provenance/coverage/unresolved banners remain visible and accessible with the rail open and closed;
+- select a known node and edge after rail reflow, close the narrow rail, open Details, and assert selection is unchanged and expected confidence plus `.evidence` `path:line` is present;
 - focus, Escape, and reopen work without a pointer-only path.
 
 ### Regression gates
@@ -427,6 +500,9 @@ Evidence accompanying the final review must include:
 - before/after serialized viewport values and selection;
 - ARIA/focus assertions rather than screenshots alone;
 - real pointer success after both transitions;
+- compositional permission/document/dirty/preview/repair/recovery status assertions and underlying `projectDirty` during preview;
+- dirty-source, coverage, and unresolved banner visibility/accessibility at 1680 and 800;
+- post-reflow Details evidence showing expected confidence and `.evidence` `path:line` after the narrow rail closes;
 - console/page-error collection;
 - timing measurement for collapse/reopen;
 - responsive overflow and unobscured-width measurements.
@@ -441,7 +517,7 @@ Rollback consequences:
 - portable documents and autosave views remain compatible;
 - no project handle or permission record requires cleanup;
 - graph layout, selection, evidence, and projection formats are unaffected;
-- structured application session fields must be reverted together with UI/main/tests, but no stored data references them.
+- structured application session/status fields must be reverted together with UI/main/tests, but no stored data references them.
 
 Do not partially revert CSS while leaving focus/state logic, or revert the session discriminator while UI branches on it. Revert the feature as one issue-backed PR if necessary.
 
@@ -449,10 +525,12 @@ If live evidence finds a renderer-port or adapter defect, keep the rail implemen
 
 ## Known residual risks
 
-- A full rail plus Explorer plus Details makes the wide canvas narrower by design. The proposed expanded/collapsed budgets require explicit constructive acceptance.
-- Compact context duplicates presentation of one action; drift is prevented only if both surfaces reuse the same element/handler/capability derivation.
+- A full rail plus Explorer plus Details makes the wide canvas narrower by design. The 192/290/380 initial tokens preserve the accepted arithmetic but still require real browser measurement; a failure reopens the product tradeoff.
+- Compact context duplicates presentation of one action; drift is prevented by requiring both surfaces to consume one derived presentation object and one handler registry.
 - Project permission read-only and semantic document read-only are independent axes and are easy to mislabel in compact space.
-- Repair, preview, recovery, permission revocation, and dirty changes can arrive while the rail is collapsed; every transition must update an accessible visible summary.
+- Repair, preview, recovery, permission revocation, project dirty, active-document dirty, and corrupt-autosave changes can arrive while the rail is collapsed; every transition must update all applicable accessible labels.
+- An untrusted project/file display label can contain long, RTL, or markup-looking text; text-node plus bidi isolation and a full accessible value are mandatory.
+- Concatenated `message` copy is not structured state; adding another project warning without a narrow field must not tempt the UI to parse it or trigger a generic-notification rewrite.
 - Responsive presentation adds a third overlay to an existing two-drawer exclusivity model. An enum/single-overlay invariant is safer than three independent booleans.
 - Moving the canvas's page origin exposes hit-test code that accidentally caches DOM geometry; current Canvas2D reads a fresh rect, but browser proof is mandatory.
 - Reconstructing rail DOM on every project notification can destroy focus or typed project names. Stable elements plus conditional containers are preferred over full host replacement.
@@ -461,9 +539,9 @@ If live evidence finds a renderer-port or adapter defect, keep the rail implemen
 
 ## Constructive decision record
 
-Transverse decisions requiring at least two of three constructive agents:
+Transverse decisions that received support from all three constructive agents:
 
-1. UI-facing structured session identity (`example | temporary | project | project-preview`) in `ProjectControllerState`, with no canonical schema effect.
+1. UI-facing structured session identity (`example | temporary | project | project-preview`) plus untrusted `displayLabel` in `ProjectControllerState`, with no canonical schema effect.
 2. Two-mode desktop canvas budget: `>=800px` while the selected rail is expanded and `>900px` after collapse at 1680.
 3. Separate rail docking threshold with inline no-project content and one overlay project drawer at 1024/800.
 4. Mounted-only rail preference, reset expanded on reload; `sessionStorage` deferred.
@@ -471,11 +549,11 @@ Transverse decisions requiring at least two of three constructive agents:
 
 Current record:
 
-- Graph/runtime owner: `SUPPORT` on RFC round 1. The proposal preserves port/domain boundaries and makes the selected product tradeoff measurable.
-- Core lead: `PENDING_FORMAL_RFC_REVIEW`. Issue #7 establishes intent and acceptance scope but does not substitute for review of these implementation-level tradeoffs.
-- Extraction/evidence owner: `PENDING_FORMAL_RFC_REVIEW`. Review should confirm that Example/Temporary/Project labels do not overstate extraction provenance and that Project Rail changes do not hide coverage/evidence warnings.
+- Graph/runtime owner: `SUPPORT` on all five decisions. The proposal preserves port/domain boundaries and makes the selected product tradeoff measurable.
+- Core lead: `SUPPORT` on all five decisions in constructive round 1.
+- Extraction/evidence owner: `SUPPORT` on all five decisions with no P0/P1 dissent, conditional clarifications incorporated in this round-2 plan for untrusted identity, global banners, compositional status, and evidence reachability.
 
-Constructive readiness requires two explicit `SUPPORT` verdicts and resolution of every reproducible P0/P1 counterexample. Preferences without a minimal case/invariant/evidence/impact do not block.
+Constructive gate: `SATISFIED_3_OF_3`. Any later measurement-driven departure from the accepted width/layout decisions or any new reproducible P0/P1 counterexample reopens the relevant decision.
 
 ## Independent premortem record
 
@@ -484,4 +562,4 @@ Constructive readiness requires two explicit `SUPPORT` verdicts and resolution o
 
 No production implementation may start while either premortem has an unresolved P0/P1 finding. Maximum three review/review-response rounds apply before arbitration or escalation to the core lead.
 
-Readiness verdict: `NOT_READY_FOR_IMPLEMENTATION`. The plan artifact is complete for round-1 review; constructive validation and both independent premortems are still mandatory.
+Readiness verdict: `NOT_READY_FOR_IMPLEMENTATION`. The round-2 plan is frozen for independent premortems; constructive validation is satisfied, but both semantic and resilience premortems must still report no unresolved P0/P1 finding.
