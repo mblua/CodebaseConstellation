@@ -945,3 +945,31 @@ Final-gate corrective verification:
 Canonical screenshots were not regenerated. The four canonical captures use the Example/no-project session; this correction changes visibility only in the simultaneous project Preview + recovery state, which is exercised by the new real-browser fixtures. It does not change canonical chrome, geometry, copy, or canvas rendering.
 
 Residual risk within `RES-EXEC-P1-01`: none identified. Independent core verification and fresh semantic plus resilience executable gates remain mandatory, so the artifact status remains `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`; no final-gate pass is declared. No push, PR, merge, schema change, persistence-identity change, general Preview change, or boundary expansion was performed.
+
+## Compact Recovery exact-opener correction
+
+The fresh semantic final re-gate against evidence HEAD `174985b0f15f67027ba88719ee37d39097f580b1` returned `FAIL_P0_P1` for one independently reproduced blocker: `SEM-REGATE-P1-01`. At Hybrid width, activating the visible compact `Recovery available` disclosure opened the Project overlay but recorded generic `#show-project-rail` as its opener. Escape therefore closed the correct overlay and focused the wrong still-visible control, violating the exact-visible-opener invariant.
+
+Corrective implementation commit `e8abf16087a13e00e519e6538bd484bc479690be` (`fix(visual-specs): restore compact recovery opener focus (#7)`) changes only that ownership link: the compact Recovery button passes itself to the shared `setSurface()` exact-opener ledger. Generic Show Project continues to pass itself; responsive preferences, overlay selection, truthful status composition, Preview/recovery ownership guards, and recovery action visibility are unchanged.
+
+The existing editable/read-only Preview ownership browser cases now execute at both responsive overlay bands rather than Wide:
+
+- editable at Hybrid `1663x900`;
+- read-only at Narrow `800x800`.
+
+Each physically collapses Project, activates the same compact Recovery element, proves Project is the only active overlay and focus moves to its Collapse control, then presses Escape. The overlay closes, the original compact Recovery element is visible and focused, generic Show Project is not focused, and the executable recovery group remains hidden. Exact project safety facts, Preview raw document, viewport, underlying recovery candidate, and responsive band remain unchanged. The same compact element reopens Project for the existing programmatic-guard and post-Return destination assertions. Existing generic Show Project, Hybrid Project, Narrow mutual-exclusion, breakpoint replacement, and exact-opener tests remain in the full acceptance suite.
+
+Exact-opener corrective verification:
+
+- `npm run typecheck`: PASS.
+- `npx playwright test tests/smoke/projectUi.spec.ts --project=acceptance --grep "Preview defers"`: PASS, 2/2.
+- `npm run verify`: PASS — 20 unit-test files / 320 tests, typecheck, production build, adapter 7/7, acceptance 34/34.
+- corrective build: 39 modules; `main.js` 1,391.19 kB / 97.11 kB gzip and `main.css` 11.58 kB / 3.11 kB gzip.
+- production `main.js` SHA-256: `86844010ED0C62B4BA9BD4864366D412FF25904E4FA25393D6CC696B058240F2`; test hooks and trusted-click probes remain absent.
+- DPR 1: 12 samples, p50 `29.5 ms`, p95/worst `31.8 ms`, 22 rapid toggles, zero page errors.
+- DPR 2: 12 samples, p50 `32.4 ms`, p95/worst `34.2 ms`, 22 rapid toggles, zero page errors.
+- `git diff --check`: PASS; strict port 5175 confirmed free after Playwright.
+
+Canonical screenshots were not regenerated. The correction affects focus ownership only after compact Recovery opens a Preview/recovery overlay; the canonical Example/no-project captures have no such state and no visual pixels, copy, geometry, or canvas rendering changed.
+
+Residual risk within `SEM-REGATE-P1-01`: none identified. Independent core verification and fresh semantic plus resilience executable gates remain mandatory, so the artifact remains `IMPLEMENTATION_READY_FOR_EXECUTABLE_REVIEW`; no final-gate pass is declared. No push, PR, merge, boundary expansion, or unrelated mutation was performed.
