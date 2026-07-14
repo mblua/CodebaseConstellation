@@ -469,8 +469,35 @@ for (const projectAccess of ['editable', 'readonly'] as const) {
         await expect(page.locator('.project-message')).toContainText('Editing enabled');
       }
 
-      await page.getByRole('button', { name: 'Open export copy', exact: true }).click();
+      const openExportCopy = page.getByRole('button', {
+        name: 'Open export copy',
+        exact: true,
+      });
+      await openExportCopy.evaluate((button) => {
+        (globalThis as unknown as Record<string, unknown>)['__openExportCopyTrusted'] = false;
+        button.addEventListener(
+          'click',
+          (event) => {
+            (globalThis as unknown as Record<string, unknown>)['__openExportCopyTrusted'] =
+              event.isTrusted;
+          },
+          { once: true },
+        );
+      });
+      await openExportCopy.click();
       await expect(page.locator('.project-message')).toContainText('Previewing export copy');
+      expect(
+        await page.evaluate(
+          () =>
+            (globalThis as unknown as Record<string, unknown>)['__openExportCopyTrusted'],
+        ),
+      ).toBe(true);
+      const previewReturn = page
+        .locator('#project-rail .project-critical-actions')
+        .getByRole('button', { name: 'Return to project', exact: true });
+      await expect(previewReturn).toBeVisible();
+      await expect(previewReturn).toBeFocused();
+      expect(await activeFocusSafety(page)).toEqual({ body: false, hiddenSubtree: false });
       expect(await rawDocument(page)).toMatchObject({
         resilienceOwnerMarker: 'PREVIEW-EXPORT-A',
       });

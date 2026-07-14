@@ -543,7 +543,18 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     openExport(): void {
       const ref = exportRefs[exportSelect.selectedIndex];
       if (ref !== undefined) {
-        void runProjectAction('Open export copy', () => projectController.previewStoredExport(ref));
+        const replaceFocusedTrigger = document.activeElement === openExport;
+        void runProjectAction('Open export copy', async () => {
+          await projectController.previewStoredExport(ref);
+          if (!replaceFocusedTrigger) return;
+          scheduleFocus(() => {
+            const active = document.activeElement;
+            const focusWasReleased =
+              active === document.body ||
+              (active instanceof Node && projectData.contains(active));
+            return currentProjectState.previewing && focusWasReleased ? returnToProject : null;
+          });
+        });
       }
     },
     restoreExport(): void {
