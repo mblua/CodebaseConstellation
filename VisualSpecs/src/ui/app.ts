@@ -877,6 +877,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     (globalThis as unknown as Record<string, unknown>)[TEST_HOOK] = {
       scene: () => controller.derived.scene.scene,
       viewport: () => controller.state.view.viewport,
+      raw: () => controller.state.raw,
       interaction: () => ({
         selection: {
           nodeIds: [...controller.state.selection.nodeIds],
@@ -1530,7 +1531,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
 
     setHiddenSafely(projectOnly, !hasProject, createProject);
     setHiddenSafely(projectData, !hasProject || project.previewing);
-    setHiddenSafely(autosaveActions, !project.pendingAutosave);
+    setHiddenSafely(autosaveActions, !project.pendingAutosave || project.previewing);
     setHiddenSafely(projectCollapse, !hasProject, createProject);
 
     if (importRefs !== project.imports) {

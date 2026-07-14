@@ -638,7 +638,7 @@ export class ProjectController {
   }
 
   async exportAutosaveCopy(): Promise<void> {
-    const project = this.requireProject();
+    const project = this.requireRecoveryOwner();
     if (this.controller.state.readOnly) {
       throw new Error('This document is read-only because it declares unsupported requirements.');
     }
@@ -666,7 +666,7 @@ export class ProjectController {
   }
 
   restoreAutosaveView(): void {
-    const project = this.requireProject();
+    const project = this.requireRecoveryOwner();
     if (project.pendingAutosave === undefined) return;
     const view = toViewState(project.pendingAutosave, this.controller.state.view);
     this.invalidateOperations();
@@ -680,8 +680,9 @@ export class ProjectController {
 
   keepCurrentView(): void {
     if (this.project === null) return;
+    const project = this.requireRecoveryOwner();
     this.invalidateOperations();
-    this.project = { ...this.project, pendingAutosave: undefined };
+    this.project = { ...project, pendingAutosave: undefined };
     this.message = 'Kept current view.';
     this.scheduleAutosave();
     this.notify();
@@ -1173,6 +1174,14 @@ export class ProjectController {
   private requireProject(): OpenProjectState {
     if (this.project === null) throw new Error('No Visual Specs project is open.');
     return this.project;
+  }
+
+  private requireRecoveryOwner(): OpenProjectState {
+    const project = this.requireProject();
+    if (this.previewReturn !== null) {
+      throw new Error('Return to the project before using its recovery actions.');
+    }
+    return project;
   }
 
   private requireProjectWriteAccess(): OpenProjectState {

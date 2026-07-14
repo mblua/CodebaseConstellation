@@ -422,6 +422,225 @@ test('autosave recovery uses Save Picker for editable readonly projects and hide
   }
 });
 
+for (const projectAccess of ['editable', 'readonly'] as const) {
+  test(`Preview defers ${projectAccess} project recovery actions to their underlying owner`, async ({ page }) => {
+    const rootName = await installHarness(page);
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    try {
+      await page.setViewportSize({ width: 1680, height: 1000 });
+      await boot(page);
+
+      const ownerA = JSON.parse(sampleDoc()) as Record<string, unknown>;
+      ownerA['resilienceOwnerMarker'] = 'PREVIEW-EXPORT-A';
+      await page.locator('#import-input').setInputFiles({
+        name: 'owner-a.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify(ownerA), 'utf8'),
+      });
+      await expect(page.locator('.project-message')).toContainText(
+        'Opened owner-a.json temporarily',
+      );
+      await page.getByLabel('Project name').fill(`Preview recovery ${projectAccess}`);
+      await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+      await expect(page.locator('.project-message')).toContainText('Created project.');
+      await page.locator('#export-btn').click();
+      await expect.poll(async () => (await readDisk(page, rootName)).exports.length).toBe(1);
+      const ownerAExport = (await readDisk(page, rootName)).exports[0];
+      expect(ownerAExport).toBeDefined();
+      expect(
+        JSON.parse(await readProjectExportText(page, rootName, ownerAExport ?? '{}')),
+      ).toMatchObject({ resilienceOwnerMarker: 'PREVIEW-EXPORT-A' });
+
+      await rewriteCurrent(page, rootName, {
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+      });
+      await writeMatchingAutosave(page, rootName, { x: 77, y: 88, zoom: 1.7 });
+      await page.reload();
+      await waitForBoot(page);
+      await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+      if (projectAccess === 'editable') {
+        await page.getByRole('button', { name: 'Enable editing', exact: true }).click();
+        await expect(page.locator('.project-message')).toContainText('Editing enabled');
+      }
+
+      await page.getByRole('button', { name: 'Open export copy', exact: true }).click();
+      await expect(page.locator('.project-message')).toContainText('Previewing export copy');
+      expect(await rawDocument(page)).toMatchObject({
+        resilienceOwnerMarker: 'PREVIEW-EXPORT-A',
+      });
+      expect(JSON.parse((await readDisk(page, rootName)).currentText)).toMatchObject({
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+      });
+      const previewState = await readProjectState(page);
+      expect(previewState).toMatchObject({
+        sessionKind: 'project-preview',
+        previewing: true,
+        pendingAutosave: true,
+        access: projectAccess === 'editable' ? 'readwrite' : 'readonly',
+      });
+      const projectStates = page.locator('#project-rail .project-states');
+      await expect(projectStates).toContainText('Preview');
+      await expect(projectStates).toContainText('Recovery available');
+
+      const restoreView = page.getByRole('button', { name: 'Restore view', exact: true });
+      const keepCurrent = page.getByRole('button', { name: 'Keep current', exact: true });
+      const exportRecovery = page.getByRole('button', {
+        name: 'Export autosave copy',
+        exact: true,
+      });
+      const recoveryButtons = page.locator('.autosave-actions button');
+      await expect(restoreView).toBeHidden();
+      await expect(keepCurrent).toBeHidden();
+      await expect(exportRecovery).toBeHidden();
+      expect(
+        await recoveryButtons.evaluateAll((buttons) =>
+          buttons.map((button) => {
+            (button as HTMLButtonElement).focus();
+            return document.activeElement === button;
+          }),
+        ),
+      ).toEqual([false, false, false]);
+
+      await page.getByRole('button', { name: 'Collapse project rail', exact: true }).click();
+      const compactStates = page.locator('.project-compact-states');
+      await expect(compactStates).toBeVisible();
+      await expect(compactStates).toContainText('Preview');
+      await expect(compactStates).toContainText('Recovery available');
+      const compactRecovery = page.getByRole('button', {
+        name: 'Recovery available',
+        exact: true,
+      });
+      await expect(compactRecovery).toBeVisible();
+      await compactRecovery.click();
+      await expect(page.locator('#project-rail')).toBeVisible();
+      await expect(exportRecovery).toBeHidden();
+
+      const guardedState = projectSafetyState(await readProjectState(page));
+      const guardedRaw = await rawDocument(page);
+      const guardedViewport = await viewport(page);
+      const guardedDisk = await readDisk(page, rootName);
+      const guardedSaves = await harnessValue<number>(page, 'saveCalls');
+      const guardedSaveNames = await harnessValue<string[]>(page, 'saveNames');
+      const guardedWrites = await harnessValue<string[]>(page, 'fileWrites');
+      await recoveryButtons.evaluateAll((buttons) => {
+        for (const button of buttons) (button as HTMLButtonElement).click();
+      });
+      await expect(page.locator('.action-error')).toContainText('Return to the project');
+
+      expect(projectSafetyState(await readProjectState(page))).toEqual(guardedState);
+      expect(await rawDocument(page)).toEqual(guardedRaw);
+      expect(await viewport(page)).toEqual(guardedViewport);
+      expect(await readDisk(page, rootName)).toEqual(guardedDisk);
+      expect(await harnessValue<number>(page, 'saveCalls')).toBe(guardedSaves);
+      expect(await harnessValue<string[]>(page, 'saveNames')).toEqual(guardedSaveNames);
+      expect(await harnessValue<string[]>(page, 'fileWrites')).toEqual(guardedWrites);
+
+      await page.getByRole('button', { name: 'Return to project', exact: true }).click();
+      await expect(page.locator('.action-error')).toBeHidden();
+      expect(await readProjectState(page)).toMatchObject({
+        sessionKind: 'project',
+        previewing: false,
+        pendingAutosave: true,
+      });
+      expect(await rawDocument(page)).toMatchObject({
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+      });
+      await expect(restoreView).toBeVisible();
+      await expect(keepCurrent).toBeVisible();
+      await expect(exportRecovery).toBeVisible();
+
+      const exportsBeforeRecovery = await readDisk(page, rootName);
+      const savesBeforeRecovery = await harnessValue<number>(page, 'saveCalls');
+      const saveNamesBeforeRecovery = await harnessValue<string[]>(page, 'saveNames');
+      const exportActionsBefore = await readProjectActions(page);
+      await exportRecovery.evaluate((button) => {
+        (globalThis as unknown as Record<string, unknown>)['__recoveryExportTrusted'] = false;
+        button.addEventListener(
+          'click',
+          (event) => {
+            (globalThis as unknown as Record<string, unknown>)['__recoveryExportTrusted'] =
+              event.isTrusted;
+          },
+          { once: true },
+        );
+      });
+      await exportRecovery.click();
+      await expect(page.locator('.project-message')).toContainText('Exported autosave copy');
+      expect(
+        await page.evaluate(
+          () =>
+            (globalThis as unknown as Record<string, unknown>)['__recoveryExportTrusted'],
+        ),
+      ).toBe(true);
+      expect((await readProjectActions(page))['Export autosave copy']).toBe(
+        (exportActionsBefore['Export autosave copy'] ?? 0) + 1,
+      );
+
+      let recoveryText: string;
+      const exportsAfterRecovery = await readDisk(page, rootName);
+      if (projectAccess === 'editable') {
+        const addedExports = exportsAfterRecovery.exports.filter(
+          (fileName) => !exportsBeforeRecovery.exports.includes(fileName),
+        );
+        expect(addedExports).toHaveLength(1);
+        expect(await harnessValue<number>(page, 'saveCalls')).toBe(savesBeforeRecovery);
+        expect(await harnessValue<string[]>(page, 'saveNames')).toEqual(
+          saveNamesBeforeRecovery,
+        );
+        recoveryText = await readProjectExportText(page, rootName, addedExports[0] ?? '');
+      } else {
+        expect(exportsAfterRecovery.exports).toEqual(exportsBeforeRecovery.exports);
+        expect(await harnessValue<number>(page, 'saveCalls')).toBe(savesBeforeRecovery + 1);
+        const saveNamesAfterRecovery = await harnessValue<string[]>(page, 'saveNames');
+        expect(saveNamesAfterRecovery).toHaveLength(saveNamesBeforeRecovery.length + 1);
+        expect(
+          (await harnessValue<boolean[]>(page, 'saveActivations')).slice(-1),
+        ).toEqual([true]);
+        recoveryText = await readRootFileText(
+          page,
+          rootName,
+          saveNamesAfterRecovery.at(-1) ?? '',
+        );
+      }
+      expect(JSON.parse(recoveryText)).toMatchObject({
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+        view: { viewport: { x: 77, y: 88, zoom: 1.7 } },
+      });
+      expect(await readProjectState(page)).toMatchObject({ pendingAutosave: true });
+
+      const returnedViewport = await viewport(page);
+      const exportsAfterCopy = (await readDisk(page, rootName)).exports;
+      const savesAfterCopy = await harnessValue<number>(page, 'saveCalls');
+      if (projectAccess === 'editable') {
+        await restoreView.click();
+        expect(await viewport(page)).toEqual({ x: 77, y: 88, zoom: 1.7 });
+        expect(await readProjectState(page)).toMatchObject({
+          previewing: false,
+          pendingAutosave: false,
+          dirty: true,
+        });
+      } else {
+        await keepCurrent.click();
+        expect(await viewport(page)).toEqual(returnedViewport);
+        expect(await readProjectState(page)).toMatchObject({
+          previewing: false,
+          pendingAutosave: false,
+          dirty: false,
+        });
+      }
+      expect((await readDisk(page, rootName)).exports).toEqual(exportsAfterCopy);
+      expect(await harnessValue<number>(page, 'saveCalls')).toBe(savesAfterCopy);
+      expect(await rawDocument(page)).toMatchObject({
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+      });
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await cleanup(page, rootName);
+    }
+  });
+}
+
 test('Return, Restore autosave, and Keep current successes clear the prior action error', async ({ page }) => {
   const rootName = await installHarness(page);
   try {
@@ -1355,6 +1574,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}): Promise
         directoryActivations: [] as boolean[],
         saveCalls: 0,
         saveActivations: [] as boolean[],
+        saveNames: [] as string[],
         openCalls: 0,
         openActivations: [] as boolean[],
         fileReads: [] as string[],
@@ -1416,7 +1636,9 @@ async function installHarness(page: Page, options: HarnessOptions = {}): Promise
           harness.saveActivations.push(navigator.userActivation.isActive);
           const opfs = await navigator.storage.getDirectory();
           const root = await opfs.getDirectoryHandle(injectedRoot, { create: true });
-          return root.getFileHandle(`save-${harness.saveCalls}-${picker.suggestedName ?? 'export.json'}`, {
+          const fileName = `save-${harness.saveCalls}-${picker.suggestedName ?? 'export.json'}`;
+          harness.saveNames.push(fileName);
+          return root.getFileHandle(fileName, {
             create: true,
           });
         };
@@ -1481,6 +1703,15 @@ async function viewport(page: Page): Promise<{ x: number; y: number; zoom: numbe
   });
 }
 
+async function rawDocument(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      raw(): Record<string, unknown>;
+    };
+    return hooks.raw();
+  });
+}
+
 async function readDisk(page: Page, rootName: string): Promise<ProjectDiskState> {
   return page.evaluate(async (name) => {
     const opfs = await navigator.storage.getDirectory();
@@ -1511,6 +1742,28 @@ async function readDisk(page: Page, rootName: string): Promise<ProjectDiskState>
       backups: await names('backups'),
     };
   }, rootName);
+}
+
+async function readProjectExportText(
+  page: Page,
+  rootName: string,
+  fileName: string,
+): Promise<string> {
+  return page.evaluate(async ({ name, file }) => {
+    const opfs = await navigator.storage.getDirectory();
+    const root = await opfs.getDirectoryHandle(name);
+    const project = await root.getDirectoryHandle('.visual-specs');
+    const exportsDir = await project.getDirectoryHandle('exports');
+    return (await (await exportsDir.getFileHandle(file)).getFile()).text();
+  }, { name: rootName, file: fileName });
+}
+
+async function readRootFileText(page: Page, rootName: string, fileName: string): Promise<string> {
+  return page.evaluate(async ({ name, file }) => {
+    const opfs = await navigator.storage.getDirectory();
+    const root = await opfs.getDirectoryHandle(name);
+    return (await (await root.getFileHandle(file)).getFile()).text();
+  }, { name: rootName, file: fileName });
 }
 
 async function rewriteCurrent(
@@ -1567,8 +1820,12 @@ async function rewriteCurrent(
   );
 }
 
-async function writeMatchingAutosave(page: Page, rootName: string): Promise<void> {
-  await page.evaluate(async (name) => {
+async function writeMatchingAutosave(
+  page: Page,
+  rootName: string,
+  recoveryViewport = { x: 10, y: 20, zoom: 1.5 },
+): Promise<void> {
+  await page.evaluate(async ({ name, viewport: savedViewport }) => {
     const opfs = await navigator.storage.getDirectory();
     const root = await opfs.getDirectoryHandle(name);
     const project = await root.getDirectoryHandle('.visual-specs');
@@ -1589,11 +1846,11 @@ async function writeMatchingAutosave(page: Page, rootName: string): Promise<void
         docId: currentMeta['docId'],
         baseRevision: currentMeta['revision'],
         savedAtUtc: '2026-07-12T17:20:00.000Z',
-        view: { viewport: { x: 10, y: 20, zoom: 1.5 } },
+        view: { viewport: savedViewport },
       }),
     );
     await writable.close();
-  }, rootName);
+  }, { name: rootName, viewport: recoveryViewport });
 }
 
 async function removeProjectArea(page: Page, rootName: string, area: string): Promise<void> {

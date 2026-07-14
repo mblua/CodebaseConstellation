@@ -519,6 +519,78 @@ describe('atomic session lifecycle fencing', () => {
     expect(controller.state.view.viewport).toEqual({ x: 11, y: 12, zoom: 1.2 });
   });
 
+  it.each(['editable', 'readonly'] as const)(
+    'keeps %s project recovery owned by the underlying document throughout Preview',
+    async (access) => {
+      const store = new FakeProjectStore();
+      const underlying = JSON.parse(sampleDoc()) as Record<string, unknown>;
+      underlying['resilienceOwnerMarker'] = 'UNDERLYING-CURRENT-B';
+      const underlyingText = JSON.stringify(underlying);
+      const revision = computeDocRevision(underlyingText);
+      store.snapshot = store.snapshotFor(underlyingText, 'readonly', {
+        autosaveViewText: autosaveViewText({
+          schema: 'visual-specs.autosave-view',
+          formatVersion: '1.0',
+          projectId: 'project-1',
+          docId: 'doc-1',
+          baseRevision: revision,
+          savedAtUtc: '2026-07-14T06:30:00.000Z',
+          view: { viewport: { x: 77, y: 88, zoom: 1.7 } },
+        }),
+      });
+      const { controller, project } = boot(store);
+      await project.openProject();
+      if (access === 'editable') await project.enableEditing();
+
+      const preview = JSON.parse(sampleDoc()) as Record<string, unknown>;
+      preview['resilienceOwnerMarker'] = 'PREVIEW-EXPORT-A';
+      store.storedText = JSON.stringify(preview);
+      await project.previewStoredExport(exportRef('older-a.json'));
+      const previewState = project.snapshot();
+      const previewRaw = controller.state.raw;
+      const previewView = controller.state.view;
+      expect(previewState).toMatchObject({
+        sessionKind: 'project-preview',
+        previewing: true,
+        pendingAutosave: true,
+        access: access === 'editable' ? 'readwrite' : 'readonly',
+      });
+
+      await expect(project.exportAutosaveCopy()).rejects.toThrow(/Return to the project/i);
+      expect(() => project.restoreAutosaveView()).toThrow(/Return to the project/i);
+      expect(() => project.keepCurrentView()).toThrow(/Return to the project/i);
+
+      expect(project.snapshot()).toEqual(previewState);
+      expect(controller.state.raw).toBe(previewRaw);
+      expect(controller.state.view).toBe(previewView);
+      expect(store.exportInputs).toEqual([]);
+      expect(store.autosaveWrites).toBe(0);
+      expect(store.writeStages).toEqual([]);
+      expect(store.backups).toEqual([]);
+
+      project.returnToProject();
+      expect(project.snapshot()).toMatchObject({
+        sessionKind: 'project',
+        previewing: false,
+        pendingAutosave: true,
+      });
+      expect(JSON.parse(controller.exportText())).toMatchObject({
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+      });
+
+      await project.exportAutosaveCopy();
+      expect(store.exportInputs).toHaveLength(1);
+      expect(store.exportInputs[0]?.project).toEqual(
+        access === 'editable' ? store.ref : null,
+      );
+      expect(JSON.parse(store.exportInputs[0]?.text ?? '{}')).toMatchObject({
+        resilienceOwnerMarker: 'UNDERLYING-CURRENT-B',
+        view: { viewport: { x: 77, y: 88, zoom: 1.7 } },
+      });
+      expect(project.snapshot().pendingAutosave).toBe(true);
+    },
+  );
+
   it('keeps the old aggregate installed while auxiliary reads are pending or fail', async () => {
     const store = new DeferredProjectStore();
     const candidate = projectSnapshot(store, 'candidate-id', 'Candidate', changedDoc());
