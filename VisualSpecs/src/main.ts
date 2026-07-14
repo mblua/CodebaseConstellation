@@ -30,7 +30,10 @@ export function boot(input: {
   try {
     const loaded = importDoc(input.datasetText);
     const controller = new Controller(input.renderer, stateFromLoaded(loaded));
-    const projectController = new ProjectController(controller, input.projectStore);
+    const projectController = new ProjectController(controller, input.projectStore, DEFAULT_LIMITS, {
+      sessionKind: 'example',
+      displayLabel: 'AgentsCommander',
+    });
 
     mountUi(input.root, controller, projectController);
     input.renderer.mount(canvasHostOf(input.root));

@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { writeFileSync } from 'node:fs';
+import { routeEdges, type RenderScene } from '../../src/ports/renderer.ts';
 import { sampleDoc } from '../support/doc.ts';
 
 interface HarnessOptions {
@@ -13,6 +15,49 @@ interface ProjectDiskState {
   imports: string[];
   exports: string[];
   backups: string[];
+}
+
+interface ProjectLayoutState {
+  band: 'wide' | 'hybrid' | 'narrow';
+  projectPreference: 'expanded' | 'collapsed';
+  sidebarPreference: 'open' | 'closed';
+  detailPreference: 'open' | 'closed';
+  activeOverlay: 'project' | 'sidebar' | 'detail' | null;
+  projectOpen: boolean;
+  sidebarOpen: boolean;
+  detailOpen: boolean;
+  timings: Array<{ band: 'wide' | 'hybrid' | 'narrow'; durationMs: number }>;
+  pendingFrames: { resize: boolean; paint: boolean; focus: boolean };
+  canvas: { x: number; y: number; width: number; height: number };
+}
+
+interface ProjectInteractionState {
+  selection: { nodeIds: string[]; edgeId: string | null };
+  expanded: string[];
+  positions: Array<[string, { x: number; y: number; pinned?: boolean }]>;
+  filters: { nodeKinds: string[]; edgeKinds: string[] };
+}
+
+interface ProjectSceneNode {
+  id: string;
+  kind: string;
+  position: { x: number; y: number };
+  size: { w: number; h: number };
+  hidden: boolean;
+}
+
+interface ProjectSceneEdge {
+  id: string;
+  kind: string;
+  sourceId: string;
+  targetId: string;
+  count: number;
+  hidden: boolean;
+}
+
+interface ProjectSceneState {
+  scene: { nodes: ProjectSceneNode[]; edges: ProjectSceneEdge[] };
+  viewport: { x: number; y: number; zoom: number };
 }
 
 test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export/Restore/cancel/conflict', async ({ page }) => {
@@ -63,6 +108,8 @@ test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export
     await setHarness(page, { externalName: 'incoming.json', externalText: changedDoc() });
     await page.getByRole('button', { name: 'Add JSON', exact: true }).click();
     await expect(page.locator('.project-message')).toContainText('Added');
+    expect(await harnessValue<number>(page, 'openCalls')).toBe(1);
+    expect(await harnessValue<boolean[]>(page, 'openActivations')).toEqual([true]);
     await page.getByRole('button', { name: 'Refresh imports', exact: true }).click();
     await expect(page.getByLabel('Project imports').locator('option')).toHaveCount(1);
     await page.getByRole('button', { name: 'Import JSON', exact: true }).click();
@@ -101,7 +148,11 @@ test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export
     const externalText = await rewriteCurrent(page, rootName, { externalChange: true });
     await page.locator('#zoom-in').click();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.locator('.banner.error')).toContainText('conflict');
+    await expect(page.locator('.action-error')).toContainText('Save project failed');
+    await expect(page.locator('.action-error')).toContainText('conflict');
+    await expect(page.locator('.banner.coverage')).toBeVisible();
+    await expect(page.locator('.banner.unresolved')).toBeVisible();
+    expect(await isElementTopmostAtCenter(page, '.banner.coverage')).toBe(true);
     disk = await readDisk(page, rootName);
     expect(disk.currentText).toBe(externalText);
     expect(disk.backups).toHaveLength(backupsBeforeConflict);
@@ -119,14 +170,21 @@ test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export
     });
     await page.getByRole('button', { name: 'Open JSON temporarily', exact: true }).click();
     expect(temporaryConfirm).toMatch(/unsaved layout or view changes/i);
+    expect(temporaryConfirm.match(/open project/giu)).toHaveLength(1);
+    expect(temporaryConfirm.match(/unsaved/giu)).toHaveLength(1);
+    expect(temporaryConfirm).not.toContain('Preview');
     await expect(name).toHaveValue('Renamed Project');
 
     await setHarness(page, { cancelNextDirectory: true });
     page.once('dialog', (dialog) => void dialog.accept());
     await page.getByRole('button', { name: 'Open Project', exact: true }).click();
     await expect(page.locator('.status')).toContainText('Cancelled. No project or document state changed.');
+    await expect(page.locator('.action-error')).toContainText('conflict');
     await expect(name).toHaveValue('Renamed Project');
     expect(await harnessValue<number>(page, 'directoryCalls')).toBe(callsBeforeDecline + 1);
+    const directoryActivations = await harnessValue<boolean[]>(page, 'directoryActivations');
+    expect(directoryActivations.length).toBeGreaterThan(0);
+    expect(directoryActivations.every(Boolean)).toBe(true);
   } finally {
     await cleanup(page, rootName);
   }
@@ -151,6 +209,7 @@ test('autosave recovery uses Save Picker for editable readonly projects and hide
     await expect(page.locator('.project-message')).toContainText('save-picker');
     const savesAfterEditable = await harnessValue<number>(page, 'saveCalls');
     expect(savesAfterEditable).toBe(1);
+    expect(await harnessValue<boolean[]>(page, 'saveActivations')).toEqual([true]);
 
     await rewriteCurrent(page, rootName, { requires: ['future-layout'] }, true);
     await page.reload();
@@ -163,10 +222,10 @@ test('autosave recovery uses Save Picker for editable readonly projects and hide
     await page.keyboard.press('S');
     await page.waitForTimeout(150);
     expect(await harnessValue<number>(page, 'saveCalls')).toBe(savesBeforeReadonlyShortcut);
-    await expect(page.locator('.banner.error')).toHaveCount(0);
+    await expect(page.locator('.action-error')).toBeHidden();
 
     const addJson = page.getByRole('button', { name: 'Add JSON', exact: true });
-    await expect(addJson).toBeDisabled();
+    await expect(addJson).toBeHidden();
     await page.getByRole('button', { name: 'Enable editing', exact: true }).click();
     await expect(page.locator('.project-message')).toContainText('Editing enabled');
     await expect(page.locator('.banner.warn').filter({ hasText: 'Read-only' })).toBeVisible();
@@ -180,7 +239,14 @@ test('autosave recovery uses Save Picker for editable readonly projects and hide
     await page.getByRole('button', { name: 'Import JSON', exact: true }).click();
     await expect(page.locator('.project-message')).toContainText('Imported');
     await expect(page.locator('.banner.warn').filter({ hasText: 'Read-only' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+    // Import already committed the recovered document, so there is no dirty Save action.
+    await expect(
+      page.locator('#project-rail .project-critical-actions').getByRole('button', {
+        name: 'Save',
+        exact: true,
+        includeHidden: true,
+      }),
+    ).toBeHidden();
     await expect(page.locator('#export-btn')).toBeEnabled();
     const recovered = await readDisk(page, rootName);
     expect(recovered.backups).toHaveLength(1);
@@ -189,7 +255,7 @@ test('autosave recovery uses Save Picker for editable readonly projects and hide
     await removeProjectArea(page, rootName, 'imports');
     await page.getByRole('button', { name: 'Refresh imports', exact: true }).click();
     await expect(page.getByLabel('Project imports').locator('option')).toHaveText('No imports');
-    await expect(page.locator('.banner.error')).toHaveCount(0);
+    await expect(page.locator('.action-error')).toBeHidden();
   } finally {
     await cleanup(page, rootName);
   }
@@ -211,6 +277,750 @@ test('unsupported project persistence advertises and uses the true download fall
   }
 });
 
+test('Project Rail is distinct, collapsible, atomic in focus, and keeps stable form DOM', async ({ page }, testInfo) => {
+  const rootName = await installHarness(page);
+  try {
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await boot(page);
+
+    const rail = page.locator('#project-rail');
+    const explorer = page.locator('#explorer-panel');
+    const details = page.locator('#details-panel');
+    await expect(rail).toBeVisible();
+    await expect(rail).toHaveAttribute('aria-label', 'Project');
+    await expect(explorer).toHaveAttribute('aria-label', 'Explorer');
+    await expect(details).toHaveAttribute('aria-label', 'Details');
+    await expect(rail.locator('.project-session-identity')).toHaveText('Example: AgentsCommander');
+    await expect(rail.getByRole('button', { name: 'Create Project', exact: true })).toBeVisible();
+    await expect(rail.getByRole('button', { name: 'Open Project', exact: true })).toBeVisible();
+    const documentRegion = rail.getByRole('region', { name: 'Document' });
+    await expect(documentRegion.getByRole('button', { name: 'Open JSON temporarily' })).toBeVisible();
+    await expect(documentRegion.getByRole('button', { name: 'Export JSON' })).toBeVisible();
+    await expect(rail.getByRole('button', { name: 'Rename', includeHidden: true })).toBeHidden();
+    await expect(rail.getByRole('button', { name: 'Save', exact: true, includeHidden: true })).toBeHidden();
+    expect(
+      await page.evaluate(() => {
+        const project = document.querySelector('#project-rail');
+        const toolbar = document.querySelector('.toolbar');
+        return project !== null && toolbar !== null &&
+          (project.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      }),
+    ).toBe(true);
+    await captureReviewEvidence(page, testInfo, 'project-rail-example-1680x1000');
+
+    const name = page.getByLabel('Project name');
+    await name.fill('Stable Project');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await expect(page.locator('.project-message')).toContainText('Created project.');
+    const disk = await readDisk(page, rootName);
+    const rawId = ((disk.manifest['project'] as Record<string, unknown>)['id'] ?? '') as string;
+    const escapedId = escapeForPresentation(rawId);
+    await expect(page.locator('.project-identity')).toHaveAccessibleName(
+      `Project Stable Project. Project ID ${escapedId}.`,
+    );
+    await expect(page.locator('.project-id-full')).toHaveText(escapedId);
+    await expect(page.locator('.project-states')).toContainText('Project access: editable');
+
+    const expandedCanvas = await page.locator('.canvas-host canvas').boundingBox();
+    const railBox = await rail.boundingBox();
+    expect(expandedCanvas).not.toBeNull();
+    expect(railBox?.width).toBeCloseTo(192, 0);
+    await page.evaluate(() => {
+      const globals = globalThis as unknown as Record<string, unknown>;
+      const hooks = globals['__visualSpecs'] as {
+        scene(): unknown;
+        viewport(): unknown;
+      };
+      globals['__railScene'] = hooks.scene();
+      globals['__railViewport'] = hooks.viewport();
+    });
+
+    const collapse = page.getByRole('button', { name: 'Collapse project rail', exact: true });
+    const show = page.locator('#show-project-rail');
+    await collapse.click();
+    await expect(show).toBeFocused();
+    await expect(show).toHaveAttribute('aria-controls', 'project-rail');
+    await expect(show).toHaveAttribute('aria-expanded', 'false');
+    await expect(rail).toBeHidden();
+    await expect(page.locator('.project-compact')).toBeVisible();
+    await expect(page.locator('.project-compact-identity')).toHaveAccessibleName(
+      `Project Stable Project. Project ID ${escapedId}.`,
+    );
+    expect(
+      await rail.evaluate((element) =>
+        Array.from(element.querySelectorAll<HTMLElement>('button,input,select,a[href],[tabindex]'))
+          .every((control) => control.offsetParent === null),
+      ),
+    ).toBe(true);
+    await waitForLayoutPaint(page);
+    const collapsedCanvas = await page.locator('.canvas-host canvas').boundingBox();
+    expect(collapsedCanvas).not.toBeNull();
+    expect((collapsedCanvas?.width ?? 0) - (expandedCanvas?.width ?? 0)).toBeCloseTo(192, 0);
+    expect(
+      await page.evaluate(() => {
+        const globals = globalThis as unknown as Record<string, unknown>;
+        const hooks = globals['__visualSpecs'] as { scene(): unknown; viewport(): unknown };
+        return hooks.scene() === globals['__railScene'] &&
+          JSON.stringify(hooks.viewport()) === JSON.stringify(globals['__railViewport']);
+      }),
+    ).toBe(true);
+    await captureReviewEvidence(page, testInfo, 'project-rail-editable-collapsed');
+
+    await show.click();
+    await expect(collapse).toBeFocused();
+    await expect(show).toHaveAttribute('aria-expanded', 'true');
+    await waitForLayoutPaint(page);
+    expect((await page.locator('.canvas-host canvas').boundingBox())?.width).toBeCloseTo(
+      expandedCanvas?.width ?? 0,
+      0,
+    );
+
+    await page.evaluate(() => {
+      const globals = globalThis as unknown as Record<string, unknown>;
+      globals['__stableProjectDom'] = {
+        name: document.querySelector('.project-name'),
+        imports: document.querySelector('.project-imports'),
+        exports: document.querySelector('.project-exports'),
+      };
+    });
+    await page.locator('#zoom-in').click();
+    await name.focus();
+    await name.fill('Draft kept through autosave');
+    await name.evaluate((input) => {
+      const field = input as HTMLInputElement;
+      field.setSelectionRange(6, 10);
+      field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: 'kept' }));
+    });
+    await expect(page.locator('.project-message')).toContainText('Autosaved view.');
+    expect(
+      await page.evaluate(() => {
+        const globals = globalThis as unknown as Record<string, unknown>;
+        const stable = globals['__stableProjectDom'] as Record<string, Element | null>;
+        const input = document.querySelector<HTMLInputElement>('.project-name');
+        return stable['name'] === input && document.activeElement === input &&
+          input?.value === 'Draft kept through autosave' &&
+          input.selectionStart === 6 && input.selectionEnd === 10;
+      }),
+    ).toBe(true);
+    await name.dispatchEvent('compositionend', { data: 'kept' });
+
+    await setHarness(page, { externalName: 'stable.json', externalText: changedDoc() });
+    await page.getByRole('button', { name: 'Add JSON', exact: true }).click();
+    await expect(page.locator('.project-message')).toContainText('Added');
+    await expect(page.getByLabel('Project imports').locator('option')).toHaveCount(1);
+    await page.evaluate(() => {
+      const globals = globalThis as unknown as Record<string, unknown>;
+      const stable = globals['__stableProjectDom'] as Record<string, Element | null>;
+      stable['firstImport'] = document.querySelector('.project-imports option');
+      globals['__firstImportValue'] = document.querySelector<HTMLOptionElement>('.project-imports option')?.value;
+    });
+    await page.getByRole('button', { name: 'Refresh imports', exact: true }).click();
+    expect(
+      await page.evaluate(() => {
+        const globals = globalThis as unknown as Record<string, unknown>;
+        const stable = globals['__stableProjectDom'] as Record<string, Element | null>;
+        return {
+          name: stable['name'] === document.querySelector('.project-name'),
+          imports: stable['imports'] === document.querySelector('.project-imports'),
+          exports: stable['exports'] === document.querySelector('.project-exports'),
+          firstImport: stable['firstImport'] === document.querySelector('.project-imports option'),
+          valuesSame:
+            globals['__firstImportValue'] !== '' &&
+            globals['__firstImportValue'] ===
+              document.querySelector<HTMLOptionElement>('.project-imports option')?.value,
+        };
+      }),
+    ).toEqual({
+      name: true,
+      imports: true,
+      exports: true,
+      firstImport: true,
+      valuesSame: true,
+    });
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
+test('hostile manifest ids stay exact, inert, accessible, and collision-visible', async ({ page }) => {
+  const rootName = await installHarness(page);
+  try {
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await boot(page);
+    await page.getByLabel('Project name').fill('Same Project');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await expect(page.locator('.project-message')).toContainText('Created project.');
+
+    const fixtures = [
+      `project-${String.fromCharCode(0x200b)}alpha`,
+      `same${String.fromCharCode(0x2060)}id`,
+      `caf${String.fromCharCode(0x00e9)}`,
+      `cafe${String.fromCharCode(0x0301)}`,
+      `a${String.fromCharCode(0x202e)}b`,
+      'a b',
+      'a\nb',
+      'a\\b',
+      '<script>',
+      String.fromCharCode(0xd800),
+      String.fromCharCode(0xd83d, 0xde00),
+    ];
+    for (const rawId of fixtures) {
+      await rewriteManifestIdentity(page, rootName, rawId, 'Same Project');
+      await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+      await expect.poll(() => currentManifestId(page)).toBe(rawId);
+      const escaped = escapeForPresentation(rawId);
+      await expect(page.locator('.project-id-full')).toHaveText(escaped);
+      await expect(page.locator('.project-identity')).toHaveAccessibleName(
+        `Project Same Project. Project ID ${escaped}.`,
+      );
+      await expect(page.locator('.project-identity')).not.toHaveAttribute('title', /.+/u);
+      expect(
+        await page.evaluate(
+          ({ raw, formatted }) => ({
+            rawIdUsed: Array.from(document.querySelectorAll<HTMLElement>('[id]'))
+              .some((element) => element.id === raw),
+            formattedIdUsed: Array.from(document.querySelectorAll<HTMLElement>('[id]'))
+              .some((element) => element.id === formatted),
+            scriptDescendant: document.querySelector('#project-rail script') !== null,
+            direction: getComputedStyle(document.querySelector('.project-id-full') as Element).direction,
+          }),
+          { raw: rawId, formatted: escaped },
+        ),
+      ).toEqual({ rawIdUsed: false, formattedIdUsed: false, scriptDescendant: false, direction: 'ltr' });
+    }
+
+    const left = 'ABCDEFGH-middle-left-IJKLMNOP';
+    const right = 'ABCDEFGH-middle-right-IJKLMNOP';
+    await rewriteManifestIdentity(page, rootName, left, 'Same Project');
+    await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+    await page.getByRole('button', { name: 'Collapse project rail', exact: true }).click();
+    const leftToken = await page.locator('.project-id-compact').textContent();
+    await page.getByRole('button', { name: 'Show project rail', exact: true }).click();
+
+    await rewriteManifestIdentity(page, rootName, right, 'Same Project');
+    await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+    const persistedBeforePresentation = await readManifestText(page, rootName);
+    await page.getByRole('button', { name: 'Collapse project rail', exact: true }).click();
+    const rightToken = await page.locator('.project-id-compact').textContent();
+    expect(leftToken).toBe('ABCDEFGH...IJKLMNOP');
+    expect(rightToken).not.toBe(leftToken);
+    expect(rightToken).toContain(';len=');
+    expect([...(rightToken ?? '')].every((char) => {
+      const unit = char.charCodeAt(0);
+      return unit >= 0x21 && unit <= 0x7e;
+    })).toBe(true);
+    await expect(page.locator('.project-compact-identity')).toHaveAccessibleName(
+      `Project Same Project. Project ID ${escapeForPresentation(right)}.`,
+    );
+    await page.getByRole('button', { name: 'Show project rail', exact: true }).click();
+    expect(await readManifestText(page, rootName)).toBe(persistedBeforePresentation);
+
+    const maximumId = 'M'.repeat(100_000);
+    await rewriteManifestIdentity(page, rootName, maximumId, 'Same Project');
+    await page.getByRole('button', { name: 'Open Project', exact: true }).click();
+    await expect.poll(() => currentManifestId(page)).toBe(maximumId);
+    expect(await page.locator('.project-id-full').evaluate((element) => element.textContent?.length)).toBe(100_000);
+    const containment = await page.locator('#project-rail').evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(containment.scrollWidth).toBeLessThanOrEqual(containment.clientWidth);
+    expect(containment.overflowY).toBe('auto');
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
+test('global map shortcuts are isolated from every interactive target family', async ({ page }) => {
+  const rootName = await installHarness(page);
+  try {
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await boot(page);
+    await page.getByLabel('Project name').fill('Shortcut isolation');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await expect(page.locator('.project-message')).toContainText('Created project.');
+
+    await page.evaluate(() => {
+      const rail = document.querySelector('#project-rail');
+      if (rail === null) throw new Error('Project Rail is missing');
+      const add = (tag: string, id: string, attrs: Record<string, string> = {}): HTMLElement => {
+        const node = document.createElement(tag);
+        node.id = id;
+        for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+        node.textContent = id;
+        rail.appendChild(node);
+        return node;
+      };
+      add('textarea', 'shortcut-textarea');
+      const select = add('select', 'shortcut-select') as HTMLSelectElement;
+      select.appendChild(new Option('save', 'save'));
+      add('button', 'shortcut-button', { type: 'button' });
+      add('a', 'shortcut-link', { href: '#shortcut-target' });
+      add('div', 'shortcut-editable', { contenteditable: 'true', tabindex: '0' });
+      add('div', 'shortcut-combobox', { role: 'combobox', tabindex: '0' });
+      add('div', 'shortcut-listbox', { role: 'listbox', tabindex: '0' });
+      add('div', 'shortcut-option', { role: 'option', tabindex: '0' });
+
+      const globals = globalThis as unknown as Record<string, unknown>;
+      const hooks = globals['__visualSpecs'] as {
+        scene(): unknown;
+        viewport(): unknown;
+        interaction(): unknown;
+        layout(): Record<string, unknown>;
+      };
+      const layout = hooks.layout();
+      globals['__shortcutBaseline'] = {
+        scene: hooks.scene(),
+        viewport: JSON.stringify(hooks.viewport()),
+        interaction: JSON.stringify(hooks.interaction()),
+        preferences: JSON.stringify({
+          projectPreference: layout['projectPreference'],
+          sidebarPreference: layout['sidebarPreference'],
+          detailPreference: layout['detailPreference'],
+          projectOpen: layout['projectOpen'],
+          sidebarOpen: layout['sidebarOpen'],
+          detailOpen: layout['detailOpen'],
+        }),
+      };
+    });
+    const diskBefore = await readDisk(page, rootName);
+    const callsBefore = {
+      directory: await harnessValue<number>(page, 'directoryCalls'),
+      open: await harnessValue<number>(page, 'openCalls'),
+      save: await harnessValue<number>(page, 'saveCalls'),
+    };
+    const targets = [
+      '.project-name',
+      '#shortcut-textarea',
+      '#shortcut-select',
+      '#shortcut-button',
+      '#shortcut-link',
+      '#shortcut-editable',
+      '#shortcut-combobox',
+      '#shortcut-listbox',
+      '#shortcut-option',
+    ];
+    const keys = ['f', 'e', 'c', 'r', 's', 'Shift+=', '-', '[', ']', '/'];
+    for (const selector of targets) {
+      const target = page.locator(selector);
+      await target.focus();
+      for (const key of keys) await page.keyboard.press(key);
+      await expect(target).toBeFocused();
+    }
+
+    expect(
+      await page.evaluate(() => {
+        const globals = globalThis as unknown as Record<string, unknown>;
+        const hooks = globals['__visualSpecs'] as {
+          scene(): unknown;
+          viewport(): unknown;
+          interaction(): unknown;
+          layout(): Record<string, unknown>;
+        };
+        const baseline = globals['__shortcutBaseline'] as Record<string, unknown>;
+        const layout = hooks.layout();
+        return {
+          scene: hooks.scene() === baseline['scene'],
+          viewport: JSON.stringify(hooks.viewport()) === baseline['viewport'],
+          interaction: JSON.stringify(hooks.interaction()) === baseline['interaction'],
+          preferences:
+            JSON.stringify({
+              projectPreference: layout['projectPreference'],
+              sidebarPreference: layout['sidebarPreference'],
+              detailPreference: layout['detailPreference'],
+              projectOpen: layout['projectOpen'],
+              sidebarOpen: layout['sidebarOpen'],
+              detailOpen: layout['detailOpen'],
+            }) === baseline['preferences'],
+        };
+      }),
+    ).toEqual({ scene: true, viewport: true, interaction: true, preferences: true });
+    expect({
+      directory: await harnessValue<number>(page, 'directoryCalls'),
+      open: await harnessValue<number>(page, 'openCalls'),
+      save: await harnessValue<number>(page, 'saveCalls'),
+    }).toEqual(callsBefore);
+    const diskAfter = await readDisk(page, rootName);
+    expect(diskAfter.currentText).toBe(diskBefore.currentText);
+    expect(diskAfter.imports).toEqual(diskBefore.imports);
+    expect(diskAfter.exports).toEqual(diskBefore.exports);
+    expect(diskAfter.backups).toEqual(diskBefore.backups);
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
+test('invalid temporary JSON reports an action error without hiding trust banners', async ({ page }, testInfo) => {
+  const rootName = await installHarness(page);
+  try {
+    await page.setViewportSize({ width: 800, height: 800 });
+    await boot(page);
+    await page.locator('#import-input').setInputFiles({
+      name: 'invalid.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{not json', 'utf8'),
+    });
+    await expect(page.locator('.action-error')).toContainText('Open temporary JSON failed');
+    await expect(page.locator('.banner.coverage')).toBeVisible();
+    await expect(page.locator('.banner.unresolved')).toBeVisible();
+    expect(await isElementTopmostAtCenter(page, '.action-error')).toBe(true);
+    expect(await isElementTopmostAtCenter(page, '.banner.coverage')).toBe(true);
+    await expect(page.locator('#project-rail')).toBeVisible();
+    expect(await page.locator('#project-rail').evaluate((element) => getComputedStyle(element).position)).not.toBe('absolute');
+    await captureReviewEvidence(page, testInfo, 'project-rail-action-error-with-trust-banners');
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
+test('the 1664/1200 transition table preserves preferences and Narrow Escape focus', async ({ page }, testInfo) => {
+  const rootName = await installHarness(page);
+  try {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await boot(page);
+    const rail = page.locator('#project-rail');
+    const toolbar = page.locator('.toolbar');
+    const initialRail = await rail.boundingBox();
+    const initialToolbar = await toolbar.boundingBox();
+    expect(initialRail).not.toBeNull();
+    expect((initialRail?.y ?? 0) + (initialRail?.height ?? 0)).toBeLessThanOrEqual(
+      (initialToolbar?.y ?? 0) + 1,
+    );
+    expect(await rail.evaluate((element) => getComputedStyle(element).position)).not.toBe('absolute');
+    expect((await page.locator('.canvas-host canvas').boundingBox())?.width).toBeGreaterThan(920);
+
+    await page.getByLabel('Project name').fill('Responsive Project');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await expect(page.locator('.project-message')).toContainText('Created project.');
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'narrow',
+      activeOverlay: 'project',
+      projectOpen: true,
+      sidebarOpen: false,
+      detailOpen: false,
+    });
+    expect(await rail.evaluate((element) => getComputedStyle(element).position)).toBe('absolute');
+    expect((await rail.boundingBox())?.width).toBeCloseTo(232, 0);
+    const canvas = await page.locator('.canvas-host canvas').boundingBox();
+    const overlay = await rail.boundingBox();
+    expect((canvas?.x ?? 0) + (canvas?.width ?? 0) - ((overlay?.x ?? 0) + (overlay?.width ?? 0))).toBeGreaterThan(350);
+    await captureReviewEvidence(page, testInfo, 'project-rail-overlay-1024x768');
+
+    const name = page.getByLabel('Project name');
+    await name.focus();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#show-project-rail')).toBeFocused();
+    await expect(rail).toBeHidden();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({ activeOverlay: null });
+    expect((await page.locator('.canvas-host canvas').boundingBox())?.width).toBeGreaterThan(920);
+
+    await page.locator('#toggle-sidebar').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      activeOverlay: 'sidebar',
+      sidebarOpen: true,
+      projectOpen: false,
+      sidebarPreference: 'open',
+    });
+    await page.locator('#show-project-rail').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      activeOverlay: 'project',
+      projectOpen: true,
+      sidebarOpen: false,
+      sidebarPreference: 'open',
+    });
+
+    for (const [width, expectedBand] of [
+      [1199, 'narrow'],
+      [1200, 'hybrid'],
+      [1663, 'hybrid'],
+      [1664, 'wide'],
+    ] as const) {
+      await page.setViewportSize({ width, height: 800 });
+      await waitForLayoutPaint(page);
+      const layout = await readProjectLayout(page);
+      expect(layout.band).toBe(expectedBand);
+      expect(layout.projectPreference).toBe('expanded');
+      expect(layout.sidebarPreference).toBe('open');
+      expect(layout.detailPreference).toBe('open');
+      expect([layout.activeOverlay].filter((surface) => surface !== null)).toHaveLength(
+        expectedBand === 'wide' ? 0 : 1,
+      );
+    }
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'wide',
+      activeOverlay: null,
+      projectOpen: true,
+      sidebarOpen: true,
+      detailOpen: true,
+    });
+
+    await page.getByRole('button', { name: 'Collapse project rail', exact: true }).click();
+    await page.setViewportSize({ width: 1663, height: 800 });
+    await waitForLayoutPaint(page);
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'hybrid',
+      projectPreference: 'collapsed',
+      activeOverlay: null,
+      projectOpen: false,
+      sidebarOpen: true,
+      detailOpen: true,
+    });
+    await page.locator('#show-project-rail').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      projectPreference: 'expanded',
+      activeOverlay: 'project',
+      sidebarPreference: 'open',
+      sidebarOpen: false,
+      detailOpen: true,
+    });
+
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await waitForLayoutPaint(page);
+    await page.locator('#import-input').setInputFiles({
+      name: 'temporary.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(sampleDoc(), 'utf8'),
+    });
+    await expect.poll(() => currentManifestId(page)).toBeNull();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'narrow',
+      activeOverlay: null,
+      projectOpen: true,
+      projectPreference: 'expanded',
+      sidebarPreference: 'open',
+      detailPreference: 'open',
+    });
+    expect(await rail.evaluate((element) => getComputedStyle(element).position)).not.toBe('absolute');
+    expect(
+      await page.evaluate(() => ({
+        horizontal: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        vertical: document.documentElement.scrollHeight <= document.documentElement.clientHeight,
+      })),
+    ).toEqual({ horizontal: true, vertical: true });
+    await captureReviewEvidence(page, testInfo, 'project-rail-inline-1024x768');
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
+test('Hybrid Project overlay preserves a real selected edge and docked Details evidence', async ({ page }, testInfo) => {
+  const rootName = await installHarness(page);
+  try {
+    await page.setViewportSize({ width: 1663, height: 1000 });
+    await boot(page);
+    await page.getByLabel('Project name').fill('Hybrid evidence');
+    await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+    await expect(page.locator('.project-message')).toContainText('Created project.');
+    await page.getByRole('button', { name: 'Collapse project rail', exact: true }).click();
+    await expect(page.locator('#show-project-rail')).toBeFocused();
+    await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#explorer-panel')).toBeVisible();
+    await expect(page.locator('#details-panel')).toBeVisible();
+
+    const beforeScene = await readProjectScene(page);
+    const edge = beforeScene.scene.edges.find((candidate) => candidate.kind === 'tauri-command' && !candidate.hidden);
+    expect(edge).toBeDefined();
+    if (edge === undefined) throw new Error('no visible tauri-command edge');
+    const route = routeEdges(beforeScene.scene as unknown as RenderScene).get(edge.id);
+    expect(route).toBeDefined();
+    if (route === undefined) throw new Error('no routed edge');
+    await clickProjectWorld(page, route.mid, beforeScene.viewport);
+    await expect(page.locator('.detail .confidence').first()).toBeVisible();
+    await expect(page.locator('.detail .evidence code').first()).toBeVisible();
+    const baseline = {
+      interaction: await readProjectInteraction(page),
+      confidence: await page.locator('.detail .confidence').allTextContents(),
+      evidence: await page.locator('.detail .evidence code').allTextContents(),
+    };
+
+    await page.locator('#show-project-rail').click();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      band: 'hybrid',
+      activeOverlay: 'project',
+      projectOpen: true,
+      sidebarPreference: 'open',
+      sidebarOpen: false,
+      detailOpen: true,
+    });
+    await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('#explorer-panel')).toBeHidden();
+    await expect(page.locator('#details-panel')).toBeVisible();
+    expect(await readProjectInteraction(page)).toEqual(baseline.interaction);
+    expect(await page.locator('.detail .confidence').allTextContents()).toEqual(baseline.confidence);
+    expect(await page.locator('.detail .evidence code').allTextContents()).toEqual(baseline.evidence);
+    expect(await isElementTopmostAtCenter(page, '.banner.coverage')).toBe(true);
+    await captureReviewEvidence(page, testInfo, 'project-rail-hybrid-1663-explorer-suppressed');
+
+    await page.getByLabel('Project name').focus();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#show-project-rail')).toBeFocused();
+    await expect.poll(() => readProjectLayout(page)).toMatchObject({
+      activeOverlay: null,
+      projectOpen: false,
+      sidebarPreference: 'open',
+      sidebarOpen: true,
+      detailOpen: true,
+    });
+    await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#explorer-panel')).toBeVisible();
+    expect(await readProjectInteraction(page)).toEqual(baseline.interaction);
+    expect(await page.locator('.detail .confidence').allTextContents()).toEqual(baseline.confidence);
+    expect(await page.locator('.detail .evidence code').allTextContents()).toEqual(baseline.evidence);
+
+    const afterScene = await readProjectScene(page);
+    const afterRoute = routeEdges(afterScene.scene as unknown as RenderScene).get(edge.id);
+    if (afterRoute === undefined) throw new Error('selected edge route disappeared');
+    await clickProjectWorld(page, afterRoute.mid, afterScene.viewport);
+    expect((await readProjectInteraction(page)).selection.edgeId).toBe(edge.id);
+  } finally {
+    await cleanup(page, rootName);
+  }
+});
+
+test('rail reflow reaches painted DPR 1/2 endpoints, coalesces bursts, and remains interactive', async ({ browser }, testInfo) => {
+  const evidence: Array<Record<string, unknown>> = [];
+  for (const deviceScaleFactor of [1, 2]) {
+    const context = await browser.newContext({
+      baseURL: 'http://localhost:5175',
+      viewport: { width: 1680, height: 1000 },
+      deviceScaleFactor,
+    });
+    const page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    const rootName = await installHarness(page);
+    try {
+      await boot(page);
+      await page.getByLabel('Project name').fill(`DPR ${deviceScaleFactor}`);
+      await page.getByRole('button', { name: 'Create Project', exact: true }).click();
+      await expect(page.locator('.project-message')).toContainText('Created project.');
+      await waitForLayoutPaint(page);
+
+      const expanded = await canvasMetrics(page);
+      expect(expanded.cssWidth).toBeGreaterThanOrEqual(800);
+      expect(expanded.backingWidth).toBe(Math.round(expanded.clientWidth * deviceScaleFactor));
+      expect(expanded.backingHeight).toBe(Math.round(expanded.clientHeight * deviceScaleFactor));
+      expect(Math.abs(expanded.backingWidth - expanded.cssWidth * deviceScaleFactor)).toBeLessThanOrEqual(1);
+      expect(Math.abs(expanded.backingHeight - expanded.cssHeight * deviceScaleFactor)).toBeLessThanOrEqual(1);
+      expect(expanded.inkCoverage).toBeGreaterThan(0.005);
+      const timingStart = (await readProjectLayout(page)).timings.length;
+      await page.evaluate(() => {
+        const globals = globalThis as unknown as Record<string, unknown>;
+        const hooks = globals['__visualSpecs'] as {
+          scene(): unknown;
+          viewport(): unknown;
+          interaction(): unknown;
+        };
+        globals['__performanceBaseline'] = {
+          scene: hooks.scene(),
+          viewport: JSON.stringify(hooks.viewport()),
+          interaction: JSON.stringify(hooks.interaction()),
+        };
+      });
+
+      for (let iteration = 0; iteration < 12; iteration += 1) {
+        const selector = iteration % 2 === 0 ? '#collapse-project-rail' : '#show-project-rail';
+        await page.locator(selector).click();
+        await waitForLayoutPaint(page);
+      }
+      const repeatedLayout = await readProjectLayout(page);
+      const durations = repeatedLayout.timings
+        .slice(timingStart)
+        .map((timing) => timing.durationMs);
+      expect(durations.length).toBeGreaterThanOrEqual(12);
+      const p50 = percentile(durations, 0.5);
+      const p95 = percentile(durations, 0.95);
+      const worst = Math.max(...durations);
+      expect(p95).toBeLessThan(100);
+      expect(worst).toBeLessThan(100);
+
+      await page.evaluate(() => {
+        const collapse = document.querySelector<HTMLButtonElement>('#collapse-project-rail');
+        const show = document.querySelector<HTMLButtonElement>('#show-project-rail');
+        if (collapse === null || show === null) throw new Error('Project Rail toggles are missing');
+        for (let iteration = 0; iteration < 22; iteration += 1) {
+          (iteration % 2 === 0 ? collapse : show).click();
+        }
+      });
+      await waitForLayoutPaint(page);
+      await expect.poll(async () => (await readProjectLayout(page)).pendingFrames).toEqual({
+        resize: false,
+        paint: false,
+        focus: false,
+      });
+      await expect(page.locator('#project-rail')).toBeVisible();
+      await expect(page.locator('#collapse-project-rail')).toHaveAttribute('aria-expanded', 'true');
+      const finalMetrics = await canvasMetrics(page);
+      expect(finalMetrics.cssWidth).toBeCloseTo(expanded.cssWidth, 0);
+      expect(finalMetrics.backingWidth).toBe(Math.round(finalMetrics.clientWidth * deviceScaleFactor));
+      expect(finalMetrics.backingHeight).toBe(Math.round(finalMetrics.clientHeight * deviceScaleFactor));
+      expect(finalMetrics.inkCoverage).toBeGreaterThan(0.005);
+      expect(
+        await page.evaluate(() => {
+          const globals = globalThis as unknown as Record<string, unknown>;
+          const hooks = globals['__visualSpecs'] as {
+            scene(): unknown;
+            viewport(): unknown;
+            interaction(): unknown;
+          };
+          const baseline = globals['__performanceBaseline'] as Record<string, unknown>;
+          return {
+            scene: hooks.scene() === baseline['scene'],
+            viewport: JSON.stringify(hooks.viewport()) === baseline['viewport'],
+            interaction: JSON.stringify(hooks.interaction()) === baseline['interaction'],
+          };
+        }),
+      ).toEqual({ scene: true, viewport: true, interaction: true });
+
+      const scene = await readProjectScene(page);
+      const node = scene.scene.nodes.find((candidate) => candidate.kind === 'application' && !candidate.hidden);
+      expect(node).toBeDefined();
+      if (node === undefined) throw new Error('no visible application node');
+      await clickProjectWorld(page, node.position, scene.viewport);
+      expect((await readProjectInteraction(page)).selection.nodeIds).toContain(node.id);
+      await page.locator('#collapse-project-rail').click();
+      await waitForLayoutPaint(page);
+      await page.locator('#show-project-rail').click();
+      await waitForLayoutPaint(page);
+      expect((await readProjectInteraction(page)).selection.nodeIds).toContain(node.id);
+
+      const beforeZoom = await viewport(page);
+      await page.locator('#zoom-in').click();
+      expect((await viewport(page)).zoom).toBeGreaterThan(beforeZoom.zoom);
+      const beforeDragScene = await readProjectScene(page);
+      const dragNode = beforeDragScene.scene.nodes.find((candidate) => candidate.id === node.id);
+      if (dragNode === undefined) throw new Error('drag node disappeared');
+      await dragProjectNode(page, dragNode.position, beforeDragScene.viewport, { x: 28, y: 22 });
+      const afterDragScene = await readProjectScene(page);
+      const moved = afterDragScene.scene.nodes.find((candidate) => candidate.id === node.id);
+      expect(moved?.position).not.toEqual(dragNode.position);
+
+      evidence.push({
+        deviceScaleFactor,
+        expanded,
+        finalMetrics,
+        samples: durations.length,
+        p50,
+        p95,
+        worst,
+        rapidToggleCount: 22,
+        pageErrors,
+      });
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await cleanup(page, rootName);
+      await context.close();
+    }
+  }
+  const evidencePath = testInfo.outputPath('project-rail-performance.json');
+  writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), 'utf8');
+  await testInfo.attach('project-rail-performance.json', {
+    path: evidencePath,
+    contentType: 'application/json',
+  });
+});
+
 async function installHarness(page: Page, options: HarnessOptions = {}): Promise<string> {
   const rootName = `visual-specs-ui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   await page.addInitScript(
@@ -221,7 +1031,9 @@ async function installHarness(page: Page, options: HarnessOptions = {}): Promise
         directoryCalls: 0,
         directoryActivations: [] as boolean[],
         saveCalls: 0,
+        saveActivations: [] as boolean[],
         openCalls: 0,
+        openActivations: [] as boolean[],
         cancelNextDirectory: false,
         externalName: 'incoming.json',
         externalText: '{"formatVersion":"1.0","nodes":[],"edges":[]}',
@@ -246,6 +1058,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}): Promise
       if (open) {
         globals['showOpenFilePicker'] = async () => {
           harness.openCalls += 1;
+          harness.openActivations.push(navigator.userActivation.isActive);
           const opfs = await navigator.storage.getDirectory();
           const root = await opfs.getDirectoryHandle(injectedRoot, { create: true });
           const handle = await root.getFileHandle(harness.externalName, { create: true });
@@ -261,6 +1074,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}): Promise
       if (save) {
         globals['showSaveFilePicker'] = async (picker: { suggestedName?: string }) => {
           harness.saveCalls += 1;
+          harness.saveActivations.push(navigator.userActivation.isActive);
           const opfs = await navigator.storage.getDirectory();
           const root = await opfs.getDirectoryHandle(injectedRoot, { create: true });
           return root.getFileHandle(`save-${harness.saveCalls}-${picker.suggestedName ?? 'export.json'}`, {
@@ -445,6 +1259,198 @@ async function removeProjectArea(page: Page, rootName: string, area: string): Pr
     },
     { name: rootName, area },
   );
+}
+
+async function rewriteManifestIdentity(
+  page: Page,
+  rootName: string,
+  id: string,
+  name: string,
+): Promise<void> {
+  await page.evaluate(
+    async ({ rootName: root, id: projectId, name: projectName }) => {
+      const opfs = await navigator.storage.getDirectory();
+      const rootHandle = await opfs.getDirectoryHandle(root);
+      const project = await rootHandle.getDirectoryHandle('.visual-specs');
+      const manifestHandle = await project.getFileHandle('project.json');
+      const manifest = JSON.parse(await (await manifestHandle.getFile()).text()) as Record<string, unknown>;
+      const identity = manifest['project'] as Record<string, unknown>;
+      identity['id'] = projectId;
+      identity['name'] = projectName;
+      identity['updatedAtUtc'] = '2026-07-14T05:00:00.000Z';
+      const writable = await manifestHandle.createWritable();
+      await writable.write(JSON.stringify(manifest));
+      await writable.close();
+    },
+    { rootName, id, name },
+  );
+}
+
+async function readManifestText(page: Page, rootName: string): Promise<string> {
+  return page.evaluate(async (name) => {
+    const opfs = await navigator.storage.getDirectory();
+    const root = await opfs.getDirectoryHandle(name);
+    const project = await root.getDirectoryHandle('.visual-specs');
+    return (await (await project.getFileHandle('project.json')).getFile()).text();
+  }, rootName);
+}
+
+async function currentManifestId(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      project(): { manifestProjectId: string | null };
+    };
+    return hooks.project().manifestProjectId;
+  });
+}
+
+async function readProjectLayout(page: Page): Promise<ProjectLayoutState> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      layout(): ProjectLayoutState;
+    };
+    return hooks.layout();
+  });
+}
+
+async function readProjectInteraction(page: Page): Promise<ProjectInteractionState> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      interaction(): ProjectInteractionState;
+    };
+    return hooks.interaction();
+  });
+}
+
+async function readProjectScene(page: Page): Promise<ProjectSceneState> {
+  return page.evaluate(() => {
+    const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+      scene(): ProjectSceneState['scene'];
+      viewport(): ProjectSceneState['viewport'];
+    };
+    return { scene: hooks.scene(), viewport: hooks.viewport() };
+  });
+}
+
+async function clickProjectWorld(
+  page: Page,
+  world: { x: number; y: number },
+  viewportState: { x: number; y: number; zoom: number },
+): Promise<void> {
+  const box = await page.locator('.canvas-host canvas').boundingBox();
+  if (box === null) throw new Error('canvas is missing');
+  await page.mouse.click(
+    box.x + (world.x - viewportState.x) * viewportState.zoom,
+    box.y + (world.y - viewportState.y) * viewportState.zoom,
+  );
+  await page.waitForTimeout(220);
+}
+
+async function dragProjectNode(
+  page: Page,
+  world: { x: number; y: number },
+  viewportState: { x: number; y: number; zoom: number },
+  delta: { x: number; y: number },
+): Promise<void> {
+  const box = await page.locator('.canvas-host canvas').boundingBox();
+  if (box === null) throw new Error('canvas is missing');
+  const start = {
+    x: box.x + (world.x - viewportState.x) * viewportState.zoom,
+    y: box.y + (world.y - viewportState.y) * viewportState.zoom,
+  };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(220);
+}
+
+async function canvasMetrics(page: Page): Promise<{
+  cssWidth: number;
+  cssHeight: number;
+  clientWidth: number;
+  clientHeight: number;
+  backingWidth: number;
+  backingHeight: number;
+  inkCoverage: number;
+}> {
+  return page.locator('.canvas-host canvas').evaluate((element) => {
+    const canvas = element as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    const context = canvas.getContext('2d');
+    if (context === null) throw new Error('canvas context is missing');
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let sampled = 0;
+    let ink = 0;
+    for (let y = 0; y < canvas.height; y += 8) {
+      for (let x = 0; x < canvas.width; x += 8) {
+        const offset = (y * canvas.width + x) * 4;
+        const red = pixels[offset] ?? 0;
+        const green = pixels[offset + 1] ?? 0;
+        const blue = pixels[offset + 2] ?? 0;
+        sampled += 1;
+        if (Math.abs(red - 11) > 6 || Math.abs(green - 14) > 6 || Math.abs(blue - 22) > 6) {
+          ink += 1;
+        }
+      }
+    }
+    return {
+      cssWidth: rect.width,
+      cssHeight: rect.height,
+      clientWidth: canvas.clientWidth,
+      clientHeight: canvas.clientHeight,
+      backingWidth: canvas.width,
+      backingHeight: canvas.height,
+      inkCoverage: sampled === 0 ? 0 : ink / sampled,
+    };
+  });
+}
+
+function percentile(values: readonly number[], quantile: number): number {
+  if (values.length === 0) return Number.NaN;
+  const ordered = [...values].sort((left, right) => left - right);
+  const index = Math.max(0, Math.ceil(ordered.length * quantile) - 1);
+  return ordered[index] ?? ordered.at(-1) ?? Number.NaN;
+}
+
+async function isElementTopmostAtCenter(page: Page, selector: string): Promise<boolean> {
+  return page.evaluate((query) => {
+    const target = document.querySelector(query);
+    if (!(target instanceof HTMLElement)) return false;
+    const rect = target.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return hit === target || (hit !== null && target.contains(hit));
+  }, selector);
+}
+
+async function captureReviewEvidence(
+  page: Page,
+  testInfo: TestInfo,
+  name: string,
+): Promise<void> {
+  const path = testInfo.outputPath(`${name}.png`);
+  await page.screenshot({ path });
+  await testInfo.attach(name, { path, contentType: 'image/png' });
+}
+
+async function waitForLayoutPaint(page: Page): Promise<void> {
+  await page.evaluate(
+    () => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }),
+  );
+}
+
+function escapeForPresentation(raw: string): string {
+  let escaped = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    const unit = raw.charCodeAt(index);
+    escaped +=
+      unit >= 0x21 && unit <= 0x7e && unit !== 0x5c
+        ? String.fromCharCode(unit)
+        : `\\u${unit.toString(16).toUpperCase().padStart(4, '0')}`;
+  }
+  return escaped;
 }
 
 async function cleanup(page: Page, rootName: string): Promise<void> {

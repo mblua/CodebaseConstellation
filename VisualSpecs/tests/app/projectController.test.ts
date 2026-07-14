@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeRenderer } from '../../src/adapters/fake/FakeRenderer.ts';
 import { Controller } from '../../src/app/controller.ts';
-import { ProjectController } from '../../src/app/projectController.ts';
+import {
+  ProjectController,
+  type ProjectControllerState,
+} from '../../src/app/projectController.ts';
 import { stateFromLoaded } from '../../src/app/state.ts';
 import { autosaveViewText } from '../../src/contract/autosaveView.ts';
+import { DEFAULT_LIMITS } from '../../src/contract/limits.ts';
 import { importDoc } from '../../src/contract/load.ts';
 import {
   makeProjectManifest,
@@ -24,6 +28,12 @@ import type {
   StoredDocRef,
   UpdateManifestInput,
 } from '../../src/ports/projectStore.ts';
+import {
+  compactManifestProjectId,
+  deriveProjectPresentation,
+  discardConfirmationCopy,
+  escapeManifestProjectId,
+} from '../../src/ui/app.ts';
 import { docText, node, sampleDoc } from '../support/doc.ts';
 
 function boot(store = new FakeProjectStore()) {
@@ -164,10 +174,10 @@ class FakeProjectStore implements ProjectStore {
   snapshotFor(
     currentText: string,
     access: 'readonly' | 'readwrite',
-    options: { name?: string; autosaveViewText?: string } = {},
+    options: { id?: string; name?: string; autosaveViewText?: string } = {},
   ): ProjectSnapshot {
     const manifest = makeProjectManifest({
-      id: 'project-1',
+      id: options.id ?? 'project-1',
       name: options.name ?? 'Fake Project',
       docId: 'doc-1',
       revision: computeDocRevision(currentText),
@@ -183,8 +193,601 @@ class FakeProjectStore implements ProjectStore {
   }
 }
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
+}
+
+class DeferredProjectStore extends FakeProjectStore {
+  readonly openQueue: Array<Promise<ProjectSnapshot>> = [];
+  readonly createEntered = deferred<void>();
+  readonly enableEntered = deferred<void>();
+  readonly commitEntered = deferred<void>();
+  readonly autosaveEntered = deferred<void>();
+  readonly autosaveSettled = deferred<void>();
+  readonly listResults = new Map<string, Promise<readonly StoredDocRef[]>>();
+  createGate: Promise<void> | null = null;
+  enableGate: Promise<void> | null = null;
+  commitGate: Promise<void> | null = null;
+  autosaveGate: Promise<void> | null = null;
+  enableResult: ProjectSnapshot | null = null;
+  createdInput: CreateProjectInput | null = null;
+  createRef: ProjectRef = { id: 'created-ref', displayName: 'Created project' };
+
+  override async openProjectRead(): Promise<ProjectSnapshot> {
+    const queued = this.openQueue.shift();
+    return queued === undefined ? super.openProjectRead() : queued;
+  }
+
+  override async createProject(
+    prepare: () => CreateProjectInput | Promise<CreateProjectInput>,
+  ): Promise<ProjectSnapshot> {
+    this.createStages.push('picker');
+    this.createEntered.resolve(undefined);
+    if (this.createGate !== null) await this.createGate;
+    const input = await prepare();
+    this.createdInput = input;
+    this.createStages.push('prepare');
+    return {
+      ref: this.createRef,
+      access: 'readwrite',
+      manifestText: input.manifestText,
+      currentText: input.currentText,
+    };
+  }
+
+  override async enableEditing(ref: ProjectRef): Promise<ProjectSnapshot> {
+    this.enableEntered.resolve(undefined);
+    if (this.enableGate !== null) await this.enableGate;
+    if (this.enableResult !== null) return this.enableResult;
+    return super.enableEditing(ref);
+  }
+
+  override async commitCurrent(input: CommitCurrentInput): Promise<void> {
+    this.commitEntered.resolve(undefined);
+    if (this.commitGate !== null) await this.commitGate;
+    await super.commitCurrent(input);
+  }
+
+  override async writeAutosaveView(ref: ProjectRef, text: string): Promise<void> {
+    this.autosaveEntered.resolve(undefined);
+    try {
+      if (this.autosaveGate !== null) await this.autosaveGate;
+      await super.writeAutosaveView(ref, text);
+    } finally {
+      this.autosaveSettled.resolve(undefined);
+    }
+  }
+
+  override async listStoredDocs(
+    ref: ProjectRef,
+    area: 'imports' | 'exports',
+  ): Promise<readonly StoredDocRef[]> {
+    const result = this.listResults.get(`${ref.id}:${area}`);
+    return result === undefined ? super.listStoredDocs(ref, area) : result;
+  }
+}
+
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('Project Rail application presentation facts', () => {
+  it('starts with explicit example identity and no fabricated project owner', () => {
+    const renderer = new FakeRenderer();
+    const controller = new Controller(renderer, stateFromLoaded(importDoc(sampleDoc())));
+    controller.start();
+    const project = new ProjectController(controller, new FakeProjectStore(), DEFAULT_LIMITS, {
+      sessionKind: 'example',
+      displayLabel: 'AgentsCommander',
+    });
+
+    expect(project.snapshot()).toMatchObject({
+      phase: 'temporary',
+      sessionKind: 'example',
+      displayLabel: 'AgentsCommander',
+      manifestProjectId: null,
+      projectDirty: null,
+      hasDiscardableChanges: false,
+      corruptAutosaveIgnored: false,
+      lifecycleBusy: false,
+    });
+  });
+
+  it.each([
+    ['project-alpha', 'project-alpha'],
+    ['project-\u200Balpha', String.raw`project-\u200Balpha`],
+    ['same\u2060id', String.raw`same\u2060id`],
+    ['caf\u00E9', String.raw`caf\u00E9`],
+    ['cafe\u0301', String.raw`cafe\u0301`],
+    ['a\u202Eb', String.raw`a\u202Eb`],
+    ['a b', String.raw`a\u0020b`],
+    ['a\nb', String.raw`a\u000Ab`],
+    ['a\\b', String.raw`a\u005Cb`],
+    ['<script>', '<script>'],
+    [String.fromCharCode(0xd800), String.raw`\uD800`],
+    [String.fromCharCode(0xd83d, 0xde00), String.raw`\uD83D\uDE00`],
+  ])('escapes the exact UTF-16 units in %j', (raw, expected) => {
+    const escaped = escapeManifestProjectId(raw);
+    expect(escaped.full).toBe(expected);
+    expect(escaped.atoms.join('')).toBe(expected);
+    expect([...escaped.full].every((char) => {
+      const unit = char.charCodeAt(0);
+      return unit >= 0x21 && unit <= 0x7e;
+    })).toBe(true);
+    expect(escaped.full.replace(/\\u[0-9A-F]{4}/gu, '')).not.toContain('\\');
+  });
+
+  it('keeps normalization lookalikes and default-ignorables distinguishable', () => {
+    const pairs = [
+      ['project-alpha', 'project-\u200Balpha'],
+      ['same\u200Bid', 'same\u2060id'],
+      ['caf\u00E9', 'cafe\u0301'],
+      ['a\u202Eb', 'a b'],
+      [String.fromCharCode(0xd800), String.fromCharCode(0xd83d, 0xde00)],
+    ] as const;
+
+    for (const [left, right] of pairs) {
+      expect(escapeManifestProjectId(left).full).not.toBe(escapeManifestProjectId(right).full);
+      expect(compactManifestProjectId(left, null)).not.toBe(
+        compactManifestProjectId(right, null),
+      );
+    }
+  });
+
+  it('reveals a bounded differing atom when default compact tokens collide', () => {
+    const left = 'ABCDEFGH-middle-left-IJKLMNOP';
+    const right = 'ABCDEFGH-middle-right-IJKLMNOP';
+    const leftToken = compactManifestProjectId(left, null);
+    expect(leftToken).toBe('ABCDEFGH...IJKLMNOP');
+
+    const rightToken = compactManifestProjectId(right, {
+      name: 'Same name',
+      rawId: left,
+      compactToken: leftToken,
+    });
+    expect(rightToken).not.toBe(leftToken);
+    expect(rightToken).toContain(';len=');
+    expect([...rightToken].every((char) => {
+      const unit = char.charCodeAt(0);
+      return unit >= 0x21 && unit <= 0x7e;
+    })).toBe(true);
+
+    const prefix = 'A'.repeat(DEFAULT_LIMITS.maxStringLength);
+    const maxToken = compactManifestProjectId(prefix, null);
+    expect(maxToken).toBe('AAAAAAAA...AAAAAAAA');
+    expect(escapeManifestProjectId(prefix).atoms).toHaveLength(DEFAULT_LIMITS.maxStringLength);
+  });
+
+  it.each([
+    ['temporary active document', stateForPresentation({
+      sessionKind: 'temporary',
+      manifestProjectId: null,
+      projectKey: null,
+      dirty: true,
+      projectDirty: null,
+      hasDiscardableChanges: true,
+    }), /current document has unsaved view changes/i],
+    ['ordinary project dirty alias', stateForPresentation({
+      dirty: true,
+      projectDirty: true,
+      hasDiscardableChanges: true,
+    }), /open project has unsaved layout or view changes/i],
+    ['ordinary project underlying alias only', stateForPresentation({
+      dirty: false,
+      projectDirty: true,
+      hasDiscardableChanges: true,
+    }), /open project has unsaved layout or view changes/i],
+    ['preview active only', stateForPresentation({
+      sessionKind: 'project-preview',
+      previewing: true,
+      dirty: true,
+      projectDirty: false,
+      hasDiscardableChanges: true,
+    }), /current Preview has unsaved view changes/i],
+  ])('names one discard owner for %s', (_name, state, expected) => {
+    const copy = discardConfirmationCopy(state, 'open another project');
+    expect(copy).toMatch(expected);
+    expect(copy?.match(/unsaved/giu)).toHaveLength(1);
+  });
+
+  it('names both independent Preview losses once and never duplicates ordinary aliases', () => {
+    const preview = discardConfirmationCopy(
+      stateForPresentation({
+        sessionKind: 'project-preview',
+        previewing: true,
+        dirty: true,
+        projectDirty: true,
+        hasDiscardableChanges: true,
+      }),
+      'open another project',
+    );
+    expect(preview?.match(/unsaved/giu)).toHaveLength(2);
+    expect(preview).toContain('current Preview');
+    expect(preview).toContain('open project');
+
+    const ordinary = discardConfirmationCopy(
+      stateForPresentation({ dirty: true, projectDirty: true, hasDiscardableChanges: true }),
+      'open another project',
+    );
+    expect(ordinary?.match(/open project/giu)).toHaveLength(1);
+    expect(
+      discardConfirmationCopy(
+        stateForPresentation({ dirty: false, projectDirty: false, hasDiscardableChanges: false }),
+        'open another project',
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    [{ access: 'readonly', readOnly: true, canEnableEditing: true }, ['Project access: read-only', 'Document: read-only'], 'enable'],
+    [{ access: 'readwrite', readOnly: true, projectDirty: true }, ['Project access: editable', 'Document: read-only', 'Unsaved project changes'], null],
+    [{ access: 'readonly', projectDirty: true, pendingAutosave: true, canEnableEditing: true }, ['Project access: read-only', 'Unsaved project changes', 'Recovery available'], 'enable'],
+    [{ access: 'readonly', readOnly: true, projectDirty: true, previewing: true, sessionKind: 'project-preview', needsRepair: true, pendingAutosave: true, canReturnToProject: true }, ['Project access: read-only', 'Document: read-only', 'Unsaved project changes', 'Preview', 'Repair needed', 'Recovery available'], 'return'],
+    [{ access: 'readonly', projectDirty: true, needsRepair: true, pendingAutosave: true, canRepairProject: true, canEnableEditing: true }, ['Repair needed', 'Unsaved project changes', 'Recovery available'], 'repair'],
+    [{ access: 'readwrite', projectDirty: true, canWriteProject: true }, ['Project access: editable', 'Unsaved project changes'], 'save'],
+    [{ corruptAutosaveIgnored: true }, ['Project access: read-only', 'Corrupt autosave ignored'], null],
+  ] as const)('composes simultaneous facts %# without suppressing labels', (overrides, labels, action) => {
+    const presentation = deriveProjectPresentation(
+      stateForPresentation(overrides as Partial<ProjectControllerState>),
+    );
+    for (const label of labels) expect(presentation.statuses).toContain(label);
+    expect(presentation.criticalAction).toBe(action);
+  });
+});
+
+describe('atomic session lifecycle fencing', () => {
+  it('publishes the exact raw manifest id without changing persisted bytes', async () => {
+    const store = new FakeProjectStore();
+    const rawId = `same${String.fromCharCode(0x200b)}${String.fromCharCode(0xd800)}\\id`;
+    store.snapshot = store.snapshotFor(changedDoc(), 'readonly', {
+      id: rawId,
+      name: 'Same-looking project',
+    });
+    const manifestBytes = store.snapshot.manifestText;
+    const { project } = boot(store);
+
+    await project.openProject();
+    expect(project.snapshot()).toMatchObject({
+      sessionKind: 'project',
+      displayLabel: 'Same-looking project',
+      manifestProjectId: rawId,
+      projectDirty: false,
+      hasDiscardableChanges: false,
+    });
+    expect(escapeManifestProjectId(project.snapshot().manifestProjectId ?? '').full).toBe(
+      String.raw`same\u200B\uD800\u005Cid`,
+    );
+    expect(store.snapshot.manifestText).toBe(manifestBytes);
+  });
+
+  it('keeps active Preview dirty separate from the retained project dirty owner', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    await project.createProject('Preview owners');
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 11, y: 12, zoom: 1.2 } });
+    expect(project.snapshot()).toMatchObject({
+      sessionKind: 'project',
+      dirty: true,
+      projectDirty: true,
+      hasDiscardableChanges: true,
+    });
+
+    store.storedText = changedDoc();
+    await project.previewStoredExport(exportRef('preview.json'));
+    expect(project.snapshot()).toMatchObject({
+      sessionKind: 'project-preview',
+      previewing: true,
+      dirty: false,
+      projectDirty: true,
+      hasDiscardableChanges: true,
+    });
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 21, y: 22, zoom: 1.4 } });
+    expect(project.snapshot()).toMatchObject({ dirty: true, projectDirty: true });
+
+    project.returnToProject();
+    expect(project.snapshot()).toMatchObject({
+      sessionKind: 'project',
+      previewing: false,
+      dirty: true,
+      projectDirty: true,
+    });
+    expect(controller.state.view.viewport).toEqual({ x: 11, y: 12, zoom: 1.2 });
+  });
+
+  it('keeps the old aggregate installed while auxiliary reads are pending or fail', async () => {
+    const store = new DeferredProjectStore();
+    const candidate = projectSnapshot(store, 'candidate-id', 'Candidate', changedDoc());
+    const imports = deferred<readonly StoredDocRef[]>();
+    const exports = deferred<readonly StoredDocRef[]>();
+    store.openQueue.push(Promise.resolve(candidate));
+    store.listResults.set(`${candidate.ref.id}:imports`, imports.promise);
+    store.listResults.set(`${candidate.ref.id}:exports`, exports.promise);
+    const { controller, project } = boot(store);
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 3, y: 4, zoom: 1.1 } });
+    const oldControllerState = controller.state;
+    const oldProject = project.snapshot();
+
+    const opening = project.openProject();
+    await vi.waitFor(() => {
+      expect(project.snapshot().lifecycleBusy).toBe(true);
+    });
+    expect(controller.state).toBe(oldControllerState);
+    expect(project.snapshot()).toMatchObject({
+      sessionKind: oldProject.sessionKind,
+      manifestProjectId: oldProject.manifestProjectId,
+      displayLabel: oldProject.displayLabel,
+      dirty: oldProject.dirty,
+      lifecycleBusy: true,
+      canCreateProject: false,
+      canOpenProject: false,
+      canExport: false,
+    });
+
+    imports.reject(new Error('imports directory could not be listed'));
+    exports.resolve([]);
+    await expect(opening).rejects.toThrow(/imports directory could not be listed/);
+    expect(controller.state).toBe(oldControllerState);
+    expect(project.snapshot()).toMatchObject({
+      sessionKind: oldProject.sessionKind,
+      manifestProjectId: oldProject.manifestProjectId,
+      displayLabel: oldProject.displayLabel,
+      dirty: oldProject.dirty,
+      lifecycleBusy: false,
+    });
+  });
+
+  it('does not let an already-started autosave completion mutate a foreground lifecycle', async () => {
+    vi.useFakeTimers();
+    const store = new DeferredProjectStore();
+    const snapshotA = projectSnapshot(store, 'project-a', 'Project A', sampleDoc(), 'readwrite');
+    const snapshotB = projectSnapshot(store, 'project-b', 'Project B', changedDoc());
+    store.snapshot = snapshotA;
+    const { controller, project } = boot(store);
+    await project.openProject();
+    await project.enableEditing();
+    const autosave = deferred<void>();
+    store.autosaveGate = autosave.promise;
+    store.denyMethod = 'autosave';
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 31, y: 32, zoom: 1.4 } });
+    await vi.advanceTimersByTimeAsync(400);
+    await store.autosaveEntered.promise;
+
+    const messageBeforeForeground = project.snapshot().message;
+    const open = deferred<ProjectSnapshot>();
+    store.openQueue.push(open.promise);
+    const opening = project.openProject();
+    expect(project.snapshot()).toMatchObject({ lifecycleBusy: true, access: 'readwrite' });
+
+    autosave.resolve(undefined);
+    await store.autosaveSettled.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(project.snapshot()).toMatchObject({
+      lifecycleBusy: true,
+      access: 'readwrite',
+      manifestProjectId: 'project-a',
+      message: messageBeforeForeground,
+    });
+
+    open.resolve(snapshotB);
+    await opening;
+    expect(project.snapshot()).toMatchObject({
+      lifecycleBusy: false,
+      access: 'readonly',
+      manifestProjectId: 'project-b',
+    });
+  });
+
+  it('never notifies a new document with an old project identity, or the inverse', async () => {
+    const store = new FakeProjectStore();
+    const rawId = `atomic${String.fromCharCode(0x2060)}id`;
+    store.snapshot = store.snapshotFor(changedDoc(), 'readonly', {
+      id: rawId,
+      name: 'Atomic B',
+    });
+    const { controller, project } = boot(store);
+    const traces: Array<{ source: string; document: string; projectId: string | null; busy: boolean }> = [];
+    const capture = (source: string): void => {
+      traces.push({
+        source,
+        document: controller.state.model.nodeById.has('changed') ? 'B' : 'old',
+        projectId: project.snapshot().manifestProjectId,
+        busy: project.snapshot().lifecycleBusy,
+      });
+    };
+    const offController = controller.subscribe(() => capture('controller'));
+    const offProject = project.subscribe(() => capture('project'));
+    traces.length = 0;
+
+    await project.openProject();
+    offController();
+    offProject();
+
+    expect(traces.some((trace) => trace.document === 'old' && trace.busy)).toBe(true);
+    expect(traces.some((trace) => trace.document === 'B' && trace.projectId === rawId)).toBe(true);
+    for (const trace of traces) {
+      expect([`${trace.document}:${trace.projectId ?? 'none'}`]).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^(old:none|B:atomic.*id)$/u),
+        ]),
+      );
+    }
+    expect(traces.at(-1)).toMatchObject({ source: 'controller', document: 'B', projectId: rawId });
+  });
+
+  it.each(['older-first', 'winner-first'] as const)(
+    'Open A/Open B admits only B when completions are %s',
+    async (order) => {
+      const store = new DeferredProjectStore();
+      const a = deferred<ProjectSnapshot>();
+      const b = deferred<ProjectSnapshot>();
+      const snapshotA = projectSnapshot(store, 'project-a', 'Project A', sampleDoc());
+      const snapshotB = projectSnapshot(store, 'project-b', 'Project B', changedDoc());
+      store.openQueue.push(a.promise, b.promise);
+      const { controller, project } = boot(store);
+
+      const openingA = project.openProject();
+      const openingB = project.openProject();
+      expect(project.snapshot().lifecycleBusy).toBe(true);
+      if (order === 'older-first') {
+        a.resolve(snapshotA);
+        await openingA;
+        expect(project.snapshot()).toMatchObject({ lifecycleBusy: true, manifestProjectId: null });
+        b.resolve(snapshotB);
+        await openingB;
+      } else {
+        b.resolve(snapshotB);
+        await openingB;
+        a.resolve(snapshotA);
+        await openingA;
+      }
+
+      expect(project.snapshot()).toMatchObject({
+        lifecycleBusy: false,
+        manifestProjectId: 'project-b',
+        displayLabel: 'Project B',
+        projectKey: snapshotB.ref.id,
+      });
+      expect(controller.state.model.nodeById.has('changed')).toBe(true);
+    },
+  );
+
+  it.each(['older-first', 'winner-first'] as const)(
+    'Open/Create commits only Create and uses its pre-picker payload when completions are %s',
+    async (order) => {
+      const store = new DeferredProjectStore();
+      const open = deferred<ProjectSnapshot>();
+      const create = deferred<void>();
+      const snapshotB = projectSnapshot(store, 'project-b', 'Project B', changedDoc());
+      store.openQueue.push(open.promise);
+      store.createGate = create.promise;
+      const { controller, project } = boot(store);
+      const capturedText = controller.exportText();
+
+      const opening = project.openProject();
+      const creating = project.createProject('Created C');
+      await store.createEntered.promise;
+      if (order === 'older-first') {
+        open.resolve(snapshotB);
+        await opening;
+        expect(project.snapshot().lifecycleBusy).toBe(true);
+        create.resolve(undefined);
+        await creating;
+      } else {
+        create.resolve(undefined);
+        await creating;
+        open.resolve(snapshotB);
+        await opening;
+      }
+
+      expect(store.createdInput?.currentText).toBe(capturedText);
+      expect(project.snapshot()).toMatchObject({
+        lifecycleBusy: false,
+        displayLabel: 'Created C',
+        projectKey: store.createRef.id,
+      });
+      expect(controller.state.model.nodeById.has('changed')).toBe(false);
+    },
+  );
+
+  it.each(['older-first', 'winner-first'] as const)(
+    'Open/Enable keeps the captured A head and only Enable wins when completions are %s',
+    async (order) => {
+      const store = new DeferredProjectStore();
+      const snapshotA = projectSnapshot(store, 'project-a', 'Project A', sampleDoc(), 'readwrite');
+      const snapshotB = projectSnapshot(store, 'project-b', 'Project B', changedDoc());
+      store.snapshot = snapshotA;
+      const { controller, project } = boot(store);
+      await project.openProject();
+
+      const open = deferred<ProjectSnapshot>();
+      const enable = deferred<void>();
+      store.openQueue.push(open.promise);
+      store.enableGate = enable.promise;
+      store.enableResult = { ...snapshotA, access: 'readwrite' };
+      const opening = project.openProject();
+      const enabling = project.enableEditing();
+      await store.enableEntered.promise;
+      if (order === 'older-first') {
+        open.resolve(snapshotB);
+        await opening;
+        expect(project.snapshot().lifecycleBusy).toBe(true);
+        enable.resolve(undefined);
+        await enabling;
+      } else {
+        enable.resolve(undefined);
+        await enabling;
+        open.resolve(snapshotB);
+        await opening;
+      }
+
+      expect(project.snapshot()).toMatchObject({
+        lifecycleBusy: false,
+        manifestProjectId: 'project-a',
+        displayLabel: 'Project A',
+        access: 'readwrite',
+      });
+      expect(controller.state.model.nodeById.has('changed')).toBe(false);
+    },
+  );
+
+  it.each(['older-first', 'winner-first'] as const)(
+    'Open/Save writes only the captured A ref/payload and only Save wins when completions are %s',
+    async (order) => {
+      const store = new DeferredProjectStore();
+      const snapshotA = projectSnapshot(store, 'project-a', 'Project A', sampleDoc(), 'readwrite');
+      const snapshotB = projectSnapshot(store, 'project-b', 'Project B', changedDoc());
+      store.snapshot = snapshotA;
+      const { controller, project } = boot(store);
+      await project.openProject();
+      await project.enableEditing();
+      controller.dispatch({ type: 'SetViewport', viewport: { x: 45, y: 46, zoom: 1.6 } });
+      const capturedText = controller.exportText();
+
+      const open = deferred<ProjectSnapshot>();
+      const commit = deferred<void>();
+      store.openQueue.push(open.promise);
+      store.commitGate = commit.promise;
+      const opening = project.openProject();
+      const saving = project.saveCurrent();
+      await store.commitEntered.promise;
+      if (order === 'older-first') {
+        open.resolve(snapshotB);
+        await opening;
+        expect(project.snapshot().lifecycleBusy).toBe(true);
+        commit.resolve(undefined);
+        await saving;
+      } else {
+        commit.resolve(undefined);
+        await saving;
+        open.resolve(snapshotB);
+        await opening;
+      }
+
+      expect(store.commits).toHaveLength(1);
+      expect(store.commits[0]?.ref.id).toBe(snapshotA.ref.id);
+      expect(store.snapshot.currentText).toBe(capturedText);
+      expect(project.snapshot()).toMatchObject({
+        lifecycleBusy: false,
+        manifestProjectId: 'project-a',
+        displayLabel: 'Project A',
+        dirty: false,
+      });
+      expect(controller.state.model.nodeById.has('changed')).toBe(false);
+    },
+  );
 });
 
 describe('ProjectController project lifecycle', () => {
@@ -440,6 +1043,7 @@ describe('autosave, export and permissions', () => {
     const { project } = boot(store);
     await project.openProject();
     expect(project.snapshot().message).toMatch(/Opened project read-only.*corrupt/);
+    expect(project.snapshot().corruptAutosaveIgnored).toBe(true);
   });
 
   it.each(['Save', 'Import', 'Restore'] as const)(
@@ -468,8 +1072,27 @@ describe('autosave, export and permissions', () => {
       }
 
       expect(project.snapshot().message).not.toMatch(/corrupt/);
+      expect(project.snapshot().corruptAutosaveIgnored).toBe(false);
     },
   );
+
+  it('keeps the structured corrupt-autosave fact after a failed rewrite', async () => {
+    vi.useFakeTimers();
+    const store = new FakeProjectStore();
+    store.snapshot = { ...store.snapshot, autosaveViewText: '{not json' };
+    const { controller, project } = boot(store);
+    await project.openProject();
+    await project.enableEditing();
+    store.denyMethod = 'autosave';
+
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 8, y: 9, zoom: 1.3 } });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(project.snapshot()).toMatchObject({
+      access: 'readonly',
+      corruptAutosaveIgnored: true,
+    });
+  });
 
   it('blocks all export paths for documents with unknown requirements', async () => {
     const store = new FakeProjectStore();
@@ -531,6 +1154,52 @@ describe('autosave, export and permissions', () => {
 });
 
 describe('bounded external input', () => {
+  it('keeps a picked temporary file read behind the lifecycle fence until one atomic commit', async () => {
+    const { controller, project } = boot();
+    const oldController = controller.state;
+    const text = deferred<string>();
+    const opening = project.openTemporarySource({
+      sourceName: 'candidate.json',
+      sizeBytes: changedDoc().length,
+      readText: async () => text.promise,
+    });
+
+    expect(controller.state).toBe(oldController);
+    expect(project.snapshot()).toMatchObject({
+      lifecycleBusy: true,
+      sessionKind: 'temporary',
+      displayLabel: 'Temporary JSON',
+    });
+    text.resolve(changedDoc());
+    await opening;
+    expect(project.snapshot()).toMatchObject({
+      lifecycleBusy: false,
+      sessionKind: 'temporary',
+      displayLabel: 'candidate.json',
+      manifestProjectId: null,
+    });
+    expect(controller.state.model.nodeById.has('changed')).toBe(true);
+  });
+
+  it('refuses an oversized temporary source before reading it', async () => {
+    const { controller, project } = boot();
+    const oldController = controller.state;
+    let reads = 0;
+    await expect(
+      project.openTemporarySource({
+        sourceName: 'too-big.json',
+        sizeBytes: DEFAULT_LIMITS.maxBytes + 1,
+        readText: async () => {
+          reads += 1;
+          return changedDoc();
+        },
+      }),
+    ).rejects.toThrow(/byte cap/);
+    expect(reads).toBe(0);
+    expect(controller.state).toBe(oldController);
+    expect(project.snapshot().lifecycleBusy).toBe(false);
+  });
+
   it('rejects oversized external JSON before readText and copies nothing', async () => {
     const store = new FakeProjectStore();
     const { project } = boot(store);
@@ -550,12 +1219,74 @@ describe('bounded external input', () => {
   });
 });
 
+function stateForPresentation(
+  overrides: Partial<ProjectControllerState> = {},
+): ProjectControllerState {
+  return {
+    phase: 'project',
+    sessionKind: 'project',
+    displayLabel: 'Fake Project',
+    manifestProjectId: 'project-1',
+    projectKey: 'fake-project',
+    access: 'readonly',
+    name: 'Fake Project',
+    readOnly: false,
+    dirty: false,
+    projectDirty: false,
+    hasDiscardableChanges: false,
+    previewing: false,
+    needsRepair: false,
+    corruptAutosaveIgnored: false,
+    lifecycleBusy: false,
+    canCreateProject: false,
+    canOpenProject: true,
+    canEnableEditing: false,
+    canRepairProject: false,
+    canWriteProject: false,
+    canAddImport: false,
+    canImport: false,
+    canBrowseProject: true,
+    canRestoreExport: false,
+    canReturnToProject: false,
+    canExport: true,
+    persistenceLabel: 'Project access: read-only.',
+    message: '',
+    pendingAutosave: false,
+    imports: [],
+    exports: [],
+    ...overrides,
+  };
+}
+
 function importRef(fileName: string): StoredDocRef {
   return {
     id: `fake-project:imports:${fileName}`,
     area: 'imports',
     displayName: fileName,
     fileName,
+  };
+}
+
+function exportRef(fileName: string): StoredDocRef {
+  return {
+    id: `fake-project:exports:${fileName}`,
+    area: 'exports',
+    displayName: fileName,
+    fileName,
+  };
+}
+
+function projectSnapshot(
+  store: FakeProjectStore,
+  id: string,
+  name: string,
+  currentText: string,
+  access: 'readonly' | 'readwrite' = 'readonly',
+): ProjectSnapshot {
+  return {
+    ...store.snapshotFor(currentText, access, { id, name }),
+    ref: { id: `${id}-ref`, displayName: name },
+    access,
   };
 }
 

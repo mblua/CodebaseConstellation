@@ -17,7 +17,6 @@ import type { Controller, Derived } from '../app/controller.ts';
 import type { ProjectController, ProjectControllerState } from '../app/projectController.ts';
 import type { AppState } from '../app/state.ts';
 import { edgeStyle, nodeStyle } from '../app/registry.ts';
-import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import type { StoredDocRef } from '../ports/projectStore.ts';
 import type { InternalBucketId } from '../projection/types.ts';
 import { clear, button, el } from './dom.ts';
@@ -27,9 +26,124 @@ export interface AppUi {
   destroy(): void;
 }
 
-/** Below this the panels stop stealing width from the map and float over it. */
-const DOCKED_MIN_WIDTH = 1200;
+const WIDE_MIN_WIDTH = 1664;
+const HYBRID_MIN_WIDTH = 1200;
 const ZOOM_STEP = 1.25;
+
+type LayoutBand = 'wide' | 'hybrid' | 'narrow';
+type Surface = 'project' | 'sidebar' | 'detail';
+export type ProjectCriticalAction = 'return' | 'repair' | 'enable' | 'save' | null;
+
+export interface EscapedProjectId {
+  atoms: readonly string[];
+  full: string;
+}
+
+export interface PreviousProjectIdentity {
+  name: string;
+  rawId: string;
+  compactToken: string;
+}
+
+export interface ProjectPresentation {
+  statuses: readonly string[];
+  criticalAction: ProjectCriticalAction;
+}
+
+/** Injective presentation of the exact JavaScript UTF-16 code-unit sequence. */
+export function escapeManifestProjectId(raw: string): EscapedProjectId {
+  const atoms: string[] = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const unit = raw.charCodeAt(index);
+    if (unit >= 0x21 && unit <= 0x7e && unit !== 0x5c) {
+      atoms.push(String.fromCharCode(unit));
+    } else {
+      atoms.push('\\u' + unit.toString(16).toUpperCase().padStart(4, '0'));
+    }
+  }
+  return { atoms, full: atoms.join('') };
+}
+
+export function compactManifestProjectId(
+  raw: string,
+  previous: PreviousProjectIdentity | null,
+): string {
+  const atoms = escapeManifestProjectId(raw).atoms;
+  const edgeAtoms = 8;
+  const defaultToken =
+    atoms.length <= edgeAtoms * 2 + 1
+      ? atoms.join('')
+      : atoms.slice(0, edgeAtoms).join('') + '...' + atoms.slice(-edgeAtoms).join('');
+  if (previous === null || previous.rawId === raw || defaultToken !== previous.compactToken) {
+    return defaultToken;
+  }
+
+  const previousAtoms = escapeManifestProjectId(previous.rawId).atoms;
+  const shared = Math.min(atoms.length, previousAtoms.length);
+  let differing = 0;
+  while (differing < shared && atoms[differing] === previousAtoms[differing]) differing += 1;
+  const start = Math.max(0, differing - 3);
+  const end = Math.min(atoms.length, differing + 4);
+  let token =
+    (start > 0 ? '...' : '') +
+    atoms.slice(start, end).join('') +
+    (end < atoms.length ? '...' : '') +
+    ';len=' +
+    raw.length;
+  if (token === previous.compactToken) token += ';at=' + differing;
+  return token;
+}
+
+export function deriveProjectPresentation(state: ProjectControllerState): ProjectPresentation {
+  const statuses: string[] = [];
+  if (state.manifestProjectId === null) {
+    statuses.push(state.sessionKind === 'example' ? 'Example document' : 'Temporary document');
+  } else {
+    statuses.push('Project access: ' + (state.access === 'readwrite' ? 'editable' : 'read-only'));
+    if (state.readOnly) statuses.push('Document: read-only');
+    if (state.projectDirty === true) statuses.push('Unsaved project changes');
+    if (state.sessionKind === 'project-preview' && state.dirty) {
+      statuses.push('Unsaved Preview changes');
+    }
+    if (state.previewing) statuses.push('Preview');
+    if (state.needsRepair) statuses.push('Repair needed');
+    if (state.pendingAutosave) statuses.push('Recovery available');
+    if (state.corruptAutosaveIgnored) statuses.push('Corrupt autosave ignored');
+  }
+  if (state.lifecycleBusy) statuses.push('Project operation in progress');
+
+  const criticalAction: ProjectCriticalAction = state.canReturnToProject
+    ? 'return'
+    : state.canRepairProject
+      ? 'repair'
+      : state.canEnableEditing
+        ? 'enable'
+        : state.canWriteProject && state.projectDirty === true
+          ? 'save'
+          : null;
+  return { statuses, criticalAction };
+}
+
+export function discardConfirmationCopy(
+  state: ProjectControllerState,
+  action: string,
+): string | null {
+  if (!state.hasDiscardableChanges) return null;
+  const losses: string[] = [];
+  if (state.sessionKind === 'project-preview') {
+    if (state.dirty) losses.push('the current Preview has unsaved view changes');
+    if (state.projectDirty === true) {
+      losses.push('the open project has unsaved layout or view changes');
+    }
+  } else if (state.sessionKind === 'project') {
+    losses.push('the open project has unsaved layout or view changes');
+  } else if (state.dirty) {
+    losses.push('the current document has unsaved view changes');
+  }
+  if (losses.length === 0) return null;
+  const named = losses.length === 1 ? losses[0] : losses[0] + ' and ' + losses[1];
+  return named + ' and will be lost if you ' + action + '. Continue?';
+}
 
 /**
  * The read-only browser test hooks exist in dev and test builds ONLY.
@@ -51,69 +165,225 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   const listHost = el('div', { class: 'node-list', role: 'listbox', 'aria-label': 'All nodes' }, []);
   const legendHost = el('div', { class: 'legend' }, []);
   const bannerHost = el('div', { class: 'banners' }, []);
-  const projectHost = el('div', { class: 'project-strip' }, []);
+  const projectRail = el('aside', {
+    class: 'project-rail',
+    id: 'project-rail',
+    'aria-label': 'Project',
+  });
+  const actionErrorHost = el('div', {
+    class: 'action-error',
+    role: 'alert',
+    'aria-live': 'assertive',
+    hidden: 'true',
+  });
   const statusHost = el('div', { class: 'status', role: 'status', 'aria-live': 'polite' }, []);
   const countsHost = el('div', { class: 'counts' }, []);
 
   const shell = el('div', { class: 'shell' }, []);
+  let currentProjectState = projectController.snapshot();
 
   // --- drawers -------------------------------------------------------------
 
-  let sidebarOpen = docked();
-  let detailOpen = docked();
+  let projectPreference: 'expanded' | 'collapsed' = 'expanded';
+  let sidebarPreference: 'open' | 'closed' = 'open';
+  let detailPreference: 'open' | 'closed' = 'open';
+  let activeOverlay: Surface | null = null;
+  let overlayOpener: HTMLElement | null = null;
+  let sidebarOpen = false;
+  let detailOpen = false;
+  let projectOpen = false;
+  let currentBand = layoutBand();
+  let destroyed = false;
+  let resizeFrame: number | null = null;
+  let paintFrame: number | null = null;
+  let focusFrame: number | null = null;
+  let layoutToken = 0;
+  const layoutTimings: Array<{ band: LayoutBand; durationMs: number }> = [];
 
-  function docked(): boolean {
-    return globalThis.innerWidth >= DOCKED_MIN_WIDTH;
+  function layoutBand(): LayoutBand {
+    if (globalThis.innerWidth >= WIDE_MIN_WIDTH) return 'wide';
+    if (globalThis.innerWidth >= HYBRID_MIN_WIDTH) return 'hybrid';
+    return 'narrow';
   }
 
-  /**
-   * When the drawers FLOAT, only one may be open.
-   *
-   * Docked, they take their own columns and both fit. Floating, they lie ON TOP of the
-   * map: a 320px explorer on the left and a 400px detail panel on the right leave an
-   * 800px window **80 pixels** of map you can actually see or click. Measuring the
-   * canvas said 800×560 and told us nothing, because the canvas was underneath them.
-   *
-   * So below the breakpoint, opening one closes the other. It is not a preference; two
-   * overlays over a small map is simply not a state worth being able to reach.
-   */
-  function setPanel(which: 'sidebar' | 'detail', open: boolean): void {
-    const exclusive = !docked() && open;
-    if (which === 'sidebar') {
-      sidebarOpen = open;
-      if (exclusive) detailOpen = false;
-    } else {
-      detailOpen = open;
-      if (exclusive) sidebarOpen = false;
+  function scheduleResize(): void {
+    const token = ++layoutToken;
+    const startedAt = performance.now();
+    if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+    if (paintFrame !== null) cancelAnimationFrame(paintFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null;
+      if (destroyed || token !== layoutToken) return;
+      controller.resize();
+      paintFrame = requestAnimationFrame(() => {
+        paintFrame = null;
+        if (destroyed || token !== layoutToken) return;
+        layoutTimings.push({ band: currentBand, durationMs: performance.now() - startedAt });
+        if (layoutTimings.length > 100) layoutTimings.shift();
+      });
+    });
+  }
+
+  function scheduleFocus(target: () => HTMLElement | null): void {
+    if (focusFrame !== null) cancelAnimationFrame(focusFrame);
+    focusFrame = requestAnimationFrame(() => {
+      focusFrame = null;
+      if (destroyed) return;
+      const destination = target();
+      if (
+        destination !== null &&
+        destination.isConnected &&
+        !destination.hidden &&
+        destination.closest('[hidden]') === null
+      ) {
+        destination.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  function positionProjectOverlay(): void {
+    if (
+      currentBand === 'wide' ||
+      currentProjectState.manifestProjectId === null ||
+      projectRail.hidden
+    ) {
+      workspace.style.removeProperty('--project-overlay-top');
+      return;
     }
+    const workspaceRect = workspace.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    workspace.style.setProperty(
+      '--project-overlay-top',
+      Math.max(0, bodyRect.top - workspaceRect.top) + 'px',
+    );
+  }
+
+  function setSurface(which: Surface, open: boolean, opener: HTMLElement): void {
+    const band = layoutBand();
+    if (which === 'project') {
+      projectPreference = open ? 'expanded' : 'collapsed';
+      if (band === 'wide') {
+        activeOverlay = null;
+      } else {
+        activeOverlay = open ? 'project' : null;
+      }
+    } else if (which === 'sidebar') {
+      if (band !== 'narrow') sidebarPreference = open ? 'open' : 'closed';
+      if (band === 'narrow') {
+        activeOverlay = open ? 'sidebar' : null;
+      } else if (open && activeOverlay === 'project') {
+        activeOverlay = null;
+      }
+    } else {
+      if (band !== 'narrow') detailPreference = open ? 'open' : 'closed';
+      if (band === 'narrow') activeOverlay = open ? 'detail' : null;
+    }
+    if (open && band !== 'wide') overlayOpener = opener;
     applyLayout();
+    if (open) {
+      scheduleFocus(() =>
+        which === 'project'
+          ? projectRail.hidden
+            ? null
+            : projectCollapse
+          : which === 'sidebar'
+            ? sidebar.hidden
+              ? null
+              : search
+            : detailPanel.hidden
+              ? null
+              : detailPanel,
+      );
+    } else {
+      const destination = opener.isConnected && !opener.hidden ? opener : overlayOpener;
+      scheduleFocus(() => destination);
+    }
+  }
+
+  function setPanel(which: 'sidebar' | 'detail', open: boolean): void {
+    const opener = which === 'sidebar' ? sidebarToggle : detailToggle;
+    setSurface(which, open, opener);
   }
 
   function applyLayout(): void {
-    const isDocked = docked();
-    // Belt and braces: whatever route got us here, never two overlays at once.
-    if (!isDocked && sidebarOpen && detailOpen) detailOpen = false;
+    const band = layoutBand();
+    currentBand = band;
+    const hasProject = currentProjectState.manifestProjectId !== null;
+    projectOpen =
+      !hasProject ||
+      (band === 'wide' ? projectPreference === 'expanded' : activeOverlay === 'project');
+    sidebarOpen =
+      band === 'wide'
+        ? sidebarPreference === 'open'
+        : band === 'hybrid'
+          ? sidebarPreference === 'open' && !projectOpen
+          : activeOverlay === 'sidebar';
+    detailOpen =
+      band === 'narrow' ? activeOverlay === 'detail' : detailPreference === 'open';
 
-    shell.classList.toggle('docked', isDocked);
-    shell.classList.toggle('floating', !isDocked);
+    shell.classList.toggle('wide', band === 'wide');
+    shell.classList.toggle('hybrid', band === 'hybrid');
+    shell.classList.toggle('narrow', band === 'narrow');
+    shell.classList.toggle('docked', band !== 'narrow');
+    shell.classList.toggle('floating', band === 'narrow');
+    shell.classList.toggle('has-project', hasProject);
+    shell.classList.toggle('no-project', !hasProject);
+    shell.classList.toggle('project-open', projectOpen);
     shell.classList.toggle('sidebar-open', sidebarOpen);
     shell.classList.toggle('detail-open', detailOpen);
+
+    // Reveal the destination first and move focus synchronously before hiding the
+    // currently focused subtree. This prevents browsers from falling back to body
+    // during collapse, overlay replacement, or a breakpoint transition.
+    if (projectOpen) {
+      projectRail.hidden = false;
+      if (document.activeElement instanceof Node && projectCompact.contains(document.activeElement)) {
+        (hasProject ? projectCollapse : createProject).focus({ preventScroll: true });
+      }
+      projectCompact.hidden = true;
+      projectShow.hidden = true;
+    } else {
+      projectCompact.hidden = !hasProject;
+      projectShow.hidden = !hasProject;
+      if (document.activeElement instanceof Node && projectRail.contains(document.activeElement)) {
+        projectShow.focus({ preventScroll: true });
+      }
+      projectRail.hidden = true;
+    }
+    if (
+      !sidebarOpen &&
+      document.activeElement instanceof Node &&
+      sidebar.contains(document.activeElement)
+    ) {
+      sidebarToggle.focus({ preventScroll: true });
+    }
+    if (
+      !detailOpen &&
+      document.activeElement instanceof Node &&
+      detailPanel.contains(document.activeElement)
+    ) {
+      detailToggle.focus({ preventScroll: true });
+    }
+    projectShow.setAttribute('aria-expanded', projectOpen ? 'true' : 'false');
+    projectCollapse.setAttribute('aria-expanded', projectOpen ? 'true' : 'false');
     sidebarToggle.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
     detailToggle.setAttribute('aria-expanded', detailOpen ? 'true' : 'false');
     sidebar.hidden = !sidebarOpen;
     detailPanel.hidden = !detailOpen;
-    // The canvas host just changed size; the adapter observes it, but say so anyway.
-    controller.resize();
+    positionProjectOverlay();
+    scheduleResize();
   }
 
   const sidebarToggle = button('Explorer', () => setPanel('sidebar', !sidebarOpen), {
     title: 'Show or hide the explorer ([)',
     'aria-expanded': 'true',
+    'aria-controls': 'explorer-panel',
     id: 'toggle-sidebar',
   });
   const detailToggle = button('Details', () => setPanel('detail', !detailOpen), {
     title: 'Show or hide the detail panel (])',
     'aria-expanded': 'true',
+    'aria-controls': 'details-panel',
     id: 'toggle-detail',
   });
 
@@ -141,31 +411,15 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     if (file === undefined) return;
-
-    // Refuse an oversized file BEFORE reading it into memory. `file.size` is already in
-    // BYTES, and the whole point of a denial-of-service cap is not to allocate the thing
-    // you are about to refuse. The contract enforces the same cap for programmatic
-    // callers; this is the preflight.
-    if (file.size > DEFAULT_LIMITS.maxBytes) {
-      reportLoadError(
-        new Error(
-          `${file.name} is ${file.size} bytes, over the ${DEFAULT_LIMITS.maxBytes} byte cap.`,
-        ),
-      );
-      fileInput.value = '';
-      return;
-    }
-
-    void file.text().then(
-      (text) => {
-        try {
-          projectController.openTemporaryText(file.name, text);
-          setStatus(`Imported ${file.name}.`);
-        } catch (err) {
-          reportLoadError(err);
-        }
-      },
-      (err: unknown) => reportLoadError(err),
+    void runProjectAction(
+      'Open temporary JSON',
+      () =>
+        projectController.openTemporarySource({
+          sourceName: file.name,
+          sizeBytes: file.size,
+          readText: async () => file.text(),
+        }),
+      `Imported ${file.name}.`,
     );
     fileInput.value = '';
   });
@@ -177,84 +431,303 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     'aria-label': 'Project name',
     placeholder: 'Visual Specs',
   });
-  let currentProjectState = projectController.snapshot();
+  let projectNameComposing = false;
+  projectName.addEventListener('compositionstart', () => {
+    projectNameComposing = true;
+  });
+  projectName.addEventListener('compositionend', () => {
+    projectNameComposing = false;
+  });
   let renderedProjectKey: string | null | undefined;
   let renderedProjectName = '';
+  let renderedManifestProjectId: string | null | undefined;
+  let selectedProjectIdentity: PreviousProjectIdentity | null = null;
   let importRefs: readonly StoredDocRef[] = [];
   let exportRefs: readonly StoredDocRef[] = [];
   const importSelect = el('select', { class: 'project-imports', 'aria-label': 'Project imports' });
   const exportSelect = el('select', { class: 'project-exports', 'aria-label': 'Project export copies' });
-  const createProject = button('Create Project', () => {
-    if (!confirmDestructive('create a different project')) return;
-    // The action is invoked directly in the click task. FsaProjectStore opens the
-    // directory picker before ProjectController performs semantic hashing.
-    void runProjectAction(() => projectController.createProject(projectName.value || 'Visual Specs'));
-  });
-  const openProject = button('Open Project', () => {
-    if (!confirmDestructive('open another project')) return;
-    void runProjectAction(() => projectController.openProject());
-  });
-  const enableEditing = button('Enable editing', () => {
-    void runProjectAction(() => projectController.enableEditing());
-  });
-  const repairProject = button('Repair project', () => {
-    void runProjectAction(() => projectController.repairProject());
-  });
-  const renameProject = button('Rename', () => {
-    void runProjectAction(() => projectController.renameProject(projectName.value));
-  });
-  const saveProject = button('Save', () => {
-    void runProjectAction(() => projectController.saveCurrent());
-  });
-  const addJson = button('Add JSON', () => {
-    void runProjectAction(() => projectController.addJsonToProject());
-  });
-  const refreshImports = button('Refresh imports', () => {
-    void runProjectAction(() => projectController.refreshImports());
-  });
-  const importJson = button('Import JSON', () => {
-    const ref = importRefs[importSelect.selectedIndex];
-    if (ref !== undefined) void runProjectAction(() => projectController.importStoredDoc(ref));
-  });
-  const refreshExports = button('Refresh exports', () => {
-    void runProjectAction(() => projectController.refreshExports());
-  });
-  const openExport = button('Open export copy', () => {
-    const ref = exportRefs[exportSelect.selectedIndex];
-    if (ref !== undefined) void runProjectAction(() => projectController.previewStoredExport(ref));
-  });
-  const restoreExport = button('Restore from export', () => {
-    const ref = exportRefs[exportSelect.selectedIndex];
-    if (ref === undefined) return;
-    if (!globalThis.confirm(`Restore ${ref.fileName} as current? The current file will be backed up first.`)) return;
-    void runProjectAction(() => projectController.restoreStoredExport(ref));
-  });
-  const returnToProject = button('Return to project', () => projectController.returnToProject());
-  const openTemporary = button('Open JSON temporarily', () => {
-    if (!confirmDestructive('open a temporary JSON document')) return;
-    fileInput.click();
-  });
-  const restoreAutosave = button('Restore view', () => projectController.restoreAutosaveView());
-  const keepAutosave = button('Keep current', () => projectController.keepCurrentView());
-  const exportAutosave = button('Export autosave copy', () => {
-    void runProjectAction(() => projectController.exportAutosaveCopy());
-  });
+
+  const handlers = {
+    createProject(): void {
+      if (!confirmDestructive('create a different project')) return;
+      void runProjectAction('Create project', () =>
+        projectController.createProject(projectName.value || 'Visual Specs'),
+      );
+    },
+    openProject(): void {
+      if (!confirmDestructive('open another project')) return;
+      void runProjectAction('Open project', () => projectController.openProject());
+    },
+    enableEditing(): void {
+      void runProjectAction('Enable editing', () => projectController.enableEditing());
+    },
+    repairProject(): void {
+      void runProjectAction('Repair project', () => projectController.repairProject());
+    },
+    renameProject(): void {
+      void runProjectAction('Rename project', () =>
+        projectController.renameProject(projectName.value),
+      );
+    },
+    saveProject(): void {
+      void runProjectAction('Save project', () => projectController.saveCurrent());
+    },
+    addJson(): void {
+      void runProjectAction('Add JSON', () => projectController.addJsonToProject());
+    },
+    refreshImports(): void {
+      void runProjectAction('Refresh imports', () => projectController.refreshImports());
+    },
+    importJson(): void {
+      const ref = importRefs[importSelect.selectedIndex];
+      if (ref !== undefined) {
+        void runProjectAction('Import JSON', () => projectController.importStoredDoc(ref));
+      }
+    },
+    refreshExports(): void {
+      void runProjectAction('Refresh exports', () => projectController.refreshExports());
+    },
+    openExport(): void {
+      const ref = exportRefs[exportSelect.selectedIndex];
+      if (ref !== undefined) {
+        void runProjectAction('Open export copy', () => projectController.previewStoredExport(ref));
+      }
+    },
+    restoreExport(): void {
+      const ref = exportRefs[exportSelect.selectedIndex];
+      if (ref === undefined) return;
+      if (
+        !globalThis.confirm(
+          'Restore ' +
+            ref.fileName +
+            ' as current? The current file will be backed up first.',
+        )
+      ) {
+        return;
+      }
+      void runProjectAction('Restore from export', () =>
+        projectController.restoreStoredExport(ref),
+      );
+    },
+    returnToProject(): void {
+      projectController.returnToProject();
+    },
+    openTemporary(): void {
+      if (!confirmDestructive('open a temporary JSON document')) return;
+      fileInput.click();
+    },
+    restoreAutosave(): void {
+      projectController.restoreAutosaveView();
+    },
+    keepAutosave(): void {
+      projectController.keepCurrentView();
+    },
+    exportAutosave(): void {
+      void runProjectAction('Export autosave copy', () =>
+        projectController.exportAutosaveCopy(),
+      );
+    },
+    exportJson(): void {
+      void doExport();
+    },
+  };
+
+  const createProject = button('Create Project', handlers.createProject);
+  const openProject = button('Open Project', handlers.openProject);
+  const enableEditing = button('Enable editing', handlers.enableEditing);
+  const repairProject = button('Repair project', handlers.repairProject);
+  const renameProject = button('Rename', handlers.renameProject);
+  const saveProject = button('Save', handlers.saveProject);
+  const addJson = button('Add JSON', handlers.addJson);
+  const refreshImports = button('Refresh imports', handlers.refreshImports);
+  const importJson = button('Import JSON', handlers.importJson);
+  const refreshExports = button('Refresh exports', handlers.refreshExports);
+  const openExport = button('Open export copy', handlers.openExport);
+  const restoreExport = button('Restore from export', handlers.restoreExport);
+  const returnToProject = button('Return to project', handlers.returnToProject);
+  const openTemporary = button('Open JSON temporarily', handlers.openTemporary);
+  const restoreAutosave = button('Restore view', handlers.restoreAutosave);
+  const keepAutosave = button('Keep current', handlers.keepAutosave);
+  const exportAutosave = button('Export autosave copy', handlers.exportAutosave);
   const projectMessage = el('span', { class: 'project-message' }, []);
   const autosaveActions = el('span', { class: 'autosave-actions' }, [
     restoreAutosave,
     keepAutosave,
     exportAutosave,
   ]);
-
-  function confirmDestructive(action: string): boolean {
-    if (!currentProjectState.dirty) return true;
-    return globalThis.confirm(`Unsaved layout or view changes will be lost if you ${action}. Continue?`);
-  }
-
-  const exportJson = button('Export JSON', () => void doExport(), {
+  const exportJson = button('Export JSON', handlers.exportJson, {
     title: 'Save this map, with your layout (S)',
     id: 'export-btn',
   });
+
+  const projectShow = button(
+    'Show project rail',
+    () => setSurface('project', true, projectShow),
+    {
+      id: 'show-project-rail',
+      'aria-controls': 'project-rail',
+      'aria-expanded': 'true',
+    },
+  );
+  const projectCollapse = button(
+    'Collapse project rail',
+    () => setSurface('project', false, projectShow),
+    {
+      id: 'collapse-project-rail',
+      'aria-controls': 'project-rail',
+      'aria-expanded': 'true',
+    },
+  );
+  const expandedProjectName = el('bdi', { class: 'project-identity-name', dir: 'auto' });
+  const expandedProjectId = el('span', {
+    class: 'project-id-full',
+    dir: 'ltr',
+  });
+  const expandedIdentityA11y = el('span', {
+    class: 'sr-only',
+    id: 'project-identity-expanded-label',
+  });
+  const expandedIdentityKind = el('span', { class: 'project-identity-kind' }, ['Project']);
+  const expandedIdentity = el(
+    'div',
+    {
+      class: 'project-identity',
+      role: 'group',
+      'aria-labelledby': 'project-identity-expanded-label',
+    },
+    [
+      expandedIdentityA11y,
+      expandedIdentityKind,
+      expandedProjectName,
+      el('span', { class: 'project-id-label' }, ['Project ID']),
+      expandedProjectId,
+    ],
+  );
+  const expandedStatusHost = el('div', {
+    class: 'project-states',
+    'aria-label': 'Project state',
+  });
+  const compactProjectName = el('bdi', { class: 'project-compact-name', dir: 'auto' });
+  const compactProjectId = el('span', { class: 'project-id-compact', dir: 'ltr' });
+  const compactIdentityA11y = el('span', {
+    class: 'sr-only',
+    id: 'project-identity-compact-label',
+  });
+  const compactIdentity = el(
+    'span',
+    {
+      class: 'project-compact-identity',
+      role: 'group',
+      'aria-labelledby': 'project-identity-compact-label',
+    },
+    [
+      compactIdentityA11y,
+      compactProjectName,
+      el('span', { class: 'project-id-label' }, ['ID']),
+      compactProjectId,
+    ],
+  );
+  const compactStatusHost = el('span', {
+    class: 'project-compact-states',
+    'aria-label': 'Project state',
+  });
+
+  const compactReturn = button('Return to project', handlers.returnToProject);
+  const compactRepair = button('Repair project', handlers.repairProject);
+  const compactEnable = button('Enable editing', handlers.enableEditing);
+  const compactSave = button('Save', handlers.saveProject);
+  const compactRecovery = button('Recovery available', () =>
+    setSurface('project', true, projectShow),
+  );
+  const compactCritical = el('span', { class: 'project-compact-action' }, [
+    compactReturn,
+    compactRepair,
+    compactEnable,
+    compactSave,
+    compactRecovery,
+  ]);
+  const projectCompact = el(
+    'div',
+    {
+      class: 'project-compact',
+      'aria-label': 'Project context',
+    },
+    [projectShow, compactIdentity, compactStatusHost, compactCritical],
+  );
+
+  const criticalActions = el('div', { class: 'project-critical-actions' }, [
+    returnToProject,
+    repairProject,
+    enableEditing,
+    saveProject,
+  ]);
+  const projectNameField = el('label', { class: 'project-name-field' }, [
+    el('span', { class: 'field-label' }, ['Project name']),
+    projectName,
+  ]);
+  const sessionKindLabel = el('span', { class: 'project-session-kind' });
+  const sessionDisplayLabel = el('bdi', { class: 'project-session-label', dir: 'auto' });
+  const sessionIdentity = el('p', { class: 'project-session-identity' }, [
+    sessionKindLabel,
+    sessionDisplayLabel,
+  ]);
+  const contextActions = el('div', { class: 'project-action-group' }, [
+    sessionIdentity,
+    projectNameField,
+    createProject,
+    openProject,
+  ]);
+  const projectEditActions = el('div', { class: 'project-action-group project-edit-actions' }, [
+    renameProject,
+    addJson,
+  ]);
+  const projectImportActions = el('div', { class: 'project-action-group project-import-actions' }, [
+    refreshImports,
+    importSelect,
+    importJson,
+  ]);
+  const projectExportActions = el('div', { class: 'project-action-group project-export-actions' }, [
+    refreshExports,
+    exportSelect,
+    openExport,
+    restoreExport,
+  ]);
+  const projectData = el('section', { class: 'project-data', 'aria-label': 'Project data' }, [
+    el('h3', { class: 'project-group-title' }, ['Project data']),
+    projectEditActions,
+    projectImportActions,
+    projectExportActions,
+  ]);
+  const documentActions = el('section', { class: 'project-document', 'aria-label': 'Document' }, [
+    el('h3', { class: 'project-group-title' }, ['Document']),
+    el('div', { class: 'project-action-group project-document-actions' }, [
+      openTemporary,
+      exportJson,
+    ]),
+  ]);
+  const projectOnly = el('div', { class: 'project-only' }, [
+    expandedIdentity,
+    expandedStatusHost,
+    criticalActions,
+    projectData,
+    autosaveActions,
+  ]);
+
+  projectRail.append(
+    el('div', { class: 'project-rail-header' }, [
+      el('h2', {}, ['Project']),
+      projectCollapse,
+    ]),
+    contextActions,
+    projectOnly,
+    documentActions,
+    projectMessage,
+  );
+
+  function confirmDestructive(action: string): boolean {
+    const copy = discardConfirmationCopy(currentProjectState, action);
+    return copy === null || globalThis.confirm(copy);
+  }
 
   const toolbar = el('div', { class: 'toolbar', role: 'toolbar', 'aria-label': 'Map controls' }, [
     el('div', { class: 'brand' }, [
@@ -282,12 +755,9 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       title: 'Throw away the positions you dragged and re-pack (R)',
     }),
     el('span', { class: 'spacer' }, []),
-    openTemporary,
-    exportJson,
-    fileInput,
   ]);
 
-  const sidebar = el('aside', { class: 'panel sidebar', 'aria-label': 'Navigator' }, [
+  const sidebar = el('aside', { class: 'panel sidebar', id: 'explorer-panel', 'aria-label': 'Explorer' }, [
     el('div', { class: 'field' }, [search]),
     countsHost,
     listHost,
@@ -295,15 +765,22 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     legendHost,
   ]);
 
-  const detailPanel = el('aside', { class: 'panel detail-panel', 'aria-label': 'Details' }, [
+  const detailPanel = el('aside', { class: 'panel detail-panel', id: 'details-panel', 'aria-label': 'Details', tabindex: '-1' }, [
     detailHost,
   ]);
 
-  shell.appendChild(toolbar);
-  shell.appendChild(projectHost);
-  shell.appendChild(bannerHost);
-  shell.appendChild(el('div', { class: 'body' }, [sidebar, canvasHost, detailPanel]));
-  shell.appendChild(statusHost);
+  const body = el('div', { class: 'body' }, [sidebar, canvasHost, detailPanel]);
+  const workspaceMain = el('div', { class: 'workspace-main' }, [
+    projectCompact,
+    toolbar,
+    actionErrorHost,
+    bannerHost,
+    body,
+    statusHost,
+    fileInput,
+  ]);
+  const workspace = el('div', { class: 'workspace' }, [projectRail, workspaceMain]);
+  shell.appendChild(workspace);
   root.appendChild(shell);
 
   // --- behaviour -----------------------------------------------------------
@@ -317,42 +794,53 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     statusHost.appendChild(el('span', {}, [message]));
   }
 
-  function reportLoadError(err: unknown): void {
+  let actionEpoch = 0;
+
+  function clearActionError(): void {
+    actionErrorHost.textContent = '';
+    actionErrorHost.hidden = true;
+  }
+
+  function reportActionError(action: string, err: unknown): void {
     const message =
       err instanceof VisualSpecsError
         ? err.message
         : err instanceof Error
           ? err.message
           : 'The document could not be read.';
-    clear(bannerHost);
-    bannerHost.appendChild(
-      el('div', { class: 'banner error', role: 'alert' }, [
-        el('strong', {}, ['This document was refused. ']),
-        el('span', {}, [message]),
-      ]),
-    );
-    setStatus('Import failed.');
+    actionErrorHost.textContent = action + ' failed. ' + message;
+    actionErrorHost.hidden = false;
+    setStatus(action + ' failed.');
   }
 
-  async function runProjectAction(action: () => Promise<void>): Promise<void> {
+  async function runProjectAction(
+    label: string,
+    action: () => Promise<void>,
+    successStatus?: string,
+  ): Promise<void> {
+    const epoch = ++actionEpoch;
     try {
       await action();
+      if (epoch === actionEpoch) {
+        clearActionError();
+        if (successStatus !== undefined) setStatus(successStatus);
+      }
     } catch (err) {
+      if (epoch !== actionEpoch) return;
       if (isPickerCancellation(err)) {
         setStatus('Cancelled. No project or document state changed.');
         return;
       }
-      reportLoadError(err);
+      reportActionError(label, err);
     }
   }
 
   async function doExport(): Promise<void> {
-    try {
-      await projectController.exportJson();
-      setStatus('Exported. Your layout, expansion and viewport are in the file.');
-    } catch (err) {
-      reportLoadError(err);
-    }
+    await runProjectAction(
+      'Export JSON',
+      () => projectController.exportJson(),
+      'Exported. Your layout, expansion and viewport are in the file.',
+    );
   }
 
   // Read-only hooks for the browser tests: they let a test know WHERE a line is
@@ -365,12 +853,54 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     (globalThis as unknown as Record<string, unknown>)[TEST_HOOK] = {
       scene: () => controller.derived.scene.scene,
       viewport: () => controller.state.view.viewport,
+      interaction: () => ({
+        selection: {
+          nodeIds: [...controller.state.selection.nodeIds],
+          edgeId: controller.state.selection.edgeId,
+        },
+        expanded: [...controller.state.view.expanded],
+        positions: [...controller.state.view.positions.entries()],
+        filters: {
+          nodeKinds: [...controller.state.filters.nodeKinds],
+          edgeKinds: [...controller.state.filters.edgeKinds],
+        },
+      }),
+      project: () => projectController.snapshot(),
+      layout: () => ({
+        band: currentBand,
+        projectPreference,
+        sidebarPreference,
+        detailPreference,
+        activeOverlay,
+        projectOpen,
+        sidebarOpen,
+        detailOpen,
+        timings: layoutTimings.map((timing) => ({ ...timing })),
+        pendingFrames: {
+          resize: resizeFrame !== null,
+          paint: paintFrame !== null,
+          focus: focusFrame !== null,
+        },
+        canvas: canvasHost.getBoundingClientRect().toJSON(),
+      }),
     };
   }
 
   const onKey = (e: KeyboardEvent): void => {
-    const target = e.target;
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+    if (e.key === 'Escape' && activeOverlay !== null) {
+      e.preventDefault();
+      const closing = activeOverlay;
+      const opener =
+        overlayOpener ??
+        (closing === 'project'
+          ? projectShow
+          : closing === 'sidebar'
+            ? sidebarToggle
+            : detailToggle);
+      setSurface(closing, false, opener);
+      return;
+    }
+    if (isInteractionEvent(e)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     switch (e.key) {
       case 'f':
@@ -408,12 +938,6 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
         setPanel('detail', !detailOpen);
         break;
       case 'Escape':
-        // Close whichever drawer is lying over the map. Docked panels stay put: they
-        // are not in the way, and dismissing them would be a surprise.
-        if (!docked()) {
-          if (sidebarOpen) setPanel('sidebar', false);
-          else if (detailOpen) setPanel('detail', false);
-        }
         break;
       case '/':
         e.preventDefault();
@@ -426,17 +950,42 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   };
   document.addEventListener('keydown', onKey);
 
-  let wasDocked = docked();
   const onResize = (): void => {
-    const isDocked = docked();
-    if (isDocked !== wasDocked) {
-      // Crossing the breakpoint re-establishes the default for that size, rather than
-      // stranding the user with two drawers open over a small map.
-      wasDocked = isDocked;
-      sidebarOpen = isDocked;
-      detailOpen = isDocked;
+    const next = layoutBand();
+    if (next !== currentBand) {
+      const previous = currentBand;
+      const focused = document.activeElement;
+      if (next === 'wide') {
+        activeOverlay = null;
+      } else if (next === 'hybrid') {
+        activeOverlay =
+          previous === 'wide' &&
+          currentProjectState.manifestProjectId !== null &&
+          projectPreference === 'expanded'
+            ? 'project'
+            : activeOverlay === 'project' && projectPreference === 'expanded'
+              ? 'project'
+              : null;
+      } else if (focused instanceof Node && projectRail.contains(focused)) {
+        activeOverlay = currentProjectState.manifestProjectId === null ? null : 'project';
+      } else if (focused instanceof Node && sidebar.contains(focused)) {
+        activeOverlay = 'sidebar';
+      } else if (focused instanceof Node && detailPanel.contains(focused)) {
+        activeOverlay = 'detail';
+      } else {
+        activeOverlay = null;
+      }
+      currentBand = next;
     }
     applyLayout();
+    const focused = document.activeElement;
+    if (focused instanceof Node && projectRail.hidden && projectRail.contains(focused)) {
+      projectShow.focus();
+    } else if (focused instanceof Node && sidebar.hidden && sidebar.contains(focused)) {
+      sidebarToggle.focus();
+    } else if (focused instanceof Node && detailPanel.hidden && detailPanel.contains(focused)) {
+      detailToggle.focus();
+    }
   };
   globalThis.addEventListener('resize', onResize);
 
@@ -459,6 +1008,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     renderLegend(state);
     renderDetail(detailHost, state, derived, cb);
     announce(state, derived);
+    positionProjectOverlay();
   });
   const unsubscribeProject = projectController.subscribe(renderProjectState);
 
@@ -503,7 +1053,7 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     const unresolved = state.model.unresolved.length;
     if (unresolved > 0) {
       bannerHost.appendChild(
-        el('div', { class: 'banner info' }, [
+        el('div', { class: 'banner info unresolved' }, [
           el('strong', {}, [`${unresolved} unresolved `]),
           el('span', {}, [
             'relation(s) were seen but not guessed at. They are listed in the document, with evidence.',
@@ -756,91 +1306,228 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     );
   }
 
-  function renderProjectState(project: ProjectControllerState): void {
-    currentProjectState = project;
-    if (project.projectKey !== renderedProjectKey || (project.projectKey !== null && project.name !== renderedProjectName)) {
-      projectName.value = project.name;
+  function setHiddenSafely(
+    element: HTMLElement,
+    hidden: boolean,
+    focusDestination: HTMLElement = projectCollapse,
+  ): void {
+    if (hidden) {
+      const focused = document.activeElement;
+      if (focused instanceof Node && element.contains(focused)) focusDestination.focus();
     }
-    renderedProjectKey = project.projectKey;
-    renderedProjectName = project.name;
+    element.hidden = hidden;
+  }
+
+  function renderEscapedAtoms(host: HTMLElement, atoms: readonly string[]): void {
+    clear(host);
+    let literalRun = '';
+    const flushLiteralRun = (): void => {
+      if (literalRun === '') return;
+      // Every character in this run is itself one literal ASCII atom, so browser
+      // wrapping at any character boundary remains atom-safe without creating one
+      // DOM node per code unit for a maximum-length identifier.
+      host.appendChild(el('span', { class: 'project-id-literal' }, [literalRun]));
+      literalRun = '';
+    };
+    for (const atom of atoms) {
+      if (atom.length === 1) {
+        literalRun += atom;
+      } else {
+        flushLiteralRun();
+        host.appendChild(el('span', { class: 'project-id-atom' }, [atom]));
+      }
+    }
+    flushLiteralRun();
+  }
+
+  function patchStoredSelect(
+    select: HTMLSelectElement,
+    refs: readonly StoredDocRef[],
+    emptyLabel: string,
+  ): void {
+    const selected = select.value;
+    const existing = new Map(
+      Array.from(select.options, (option) => [option.value, option] as const),
+    );
+    const desired =
+      refs.length === 0
+        ? [{ id: '', displayName: emptyLabel }]
+        : refs.map((ref) => ({ id: ref.id, displayName: ref.displayName }));
+    const retained = new Set<HTMLOptionElement>();
+    for (const item of desired) {
+      const option = existing.get(item.id) ?? el('option', { value: item.id });
+      option.value = item.id;
+      if (option.textContent !== item.displayName) option.textContent = item.displayName;
+      retained.add(option);
+      select.appendChild(option);
+    }
+    for (const option of Array.from(select.options)) {
+      if (!retained.has(option)) option.remove();
+    }
+    select.value = desired.some((item) => item.id === selected) ? selected : desired[0]?.id ?? '';
+  }
+
+  function renderProjectState(project: ProjectControllerState): void {
+    const previousManifestId = renderedManifestProjectId;
+    const hasProject = project.manifestProjectId !== null;
+    const committedDifferentProject =
+      hasProject &&
+      previousManifestId !== undefined &&
+      project.manifestProjectId !== previousManifestId;
+    currentProjectState = project;
+
+    const nameNeedsSync =
+      project.projectKey !== renderedProjectKey ||
+      project.name !== renderedProjectName ||
+      project.manifestProjectId !== previousManifestId;
+    if (
+      nameNeedsSync &&
+      document.activeElement !== projectName &&
+      !projectNameComposing
+    ) {
+      projectName.value = project.name;
+      renderedProjectKey = project.projectKey;
+      renderedProjectName = project.name;
+    }
+
+    sessionKindLabel.textContent =
+      project.sessionKind === 'example'
+        ? 'Example: '
+        : project.sessionKind === 'temporary'
+          ? 'Temporary: '
+          : project.sessionKind === 'project-preview'
+            ? 'Project preview: '
+            : 'Project: ';
+    sessionDisplayLabel.textContent =
+      project.sessionKind === 'project' || project.sessionKind === 'project-preview'
+        ? project.name
+        : project.displayLabel;
+
+    if (hasProject) {
+      const rawId = project.manifestProjectId as string;
+      const previousForCollision =
+        selectedProjectIdentity !== null &&
+        selectedProjectIdentity.name === project.name &&
+        selectedProjectIdentity.rawId !== rawId
+          ? selectedProjectIdentity
+          : null;
+      const escaped = escapeManifestProjectId(rawId);
+      const token =
+        selectedProjectIdentity !== null && selectedProjectIdentity.rawId === rawId
+          ? selectedProjectIdentity.compactToken
+          : compactManifestProjectId(rawId, previousForCollision);
+      selectedProjectIdentity = { name: project.name, rawId, compactToken: token };
+
+      expandedProjectName.textContent = project.name;
+      compactProjectName.textContent = project.name;
+      compactProjectId.textContent = token;
+      renderEscapedAtoms(expandedProjectId, escaped.atoms);
+      const accessibleIdentity =
+        'Project ' + project.name + '. Project ID ' + escaped.full + '.';
+      expandedIdentityA11y.textContent = accessibleIdentity;
+      compactIdentityA11y.textContent = accessibleIdentity;
+      expandedIdentityKind.textContent =
+        project.sessionKind === 'project-preview' ? 'Project preview' : 'Project';
+    } else {
+      expandedProjectName.textContent = project.displayLabel;
+      compactProjectName.textContent = '';
+      compactProjectId.textContent = '';
+      expandedProjectId.textContent = '';
+      expandedIdentityA11y.textContent = '';
+      compactIdentityA11y.textContent = '';
+    }
+    renderedManifestProjectId = project.manifestProjectId;
+
+    if (committedDifferentProject) {
+      projectPreference = 'expanded';
+      if (layoutBand() !== 'wide') {
+        activeOverlay = 'project';
+        overlayOpener = projectShow;
+      }
+    } else if (!hasProject && activeOverlay === 'project') {
+      activeOverlay = null;
+    }
+
+    const presentation = deriveProjectPresentation(project);
+    expandedStatusHost.textContent = presentation.statuses.join(' · ');
+    compactStatusHost.textContent = presentation.statuses.join(' · ');
+
     createProject.disabled = !project.canCreateProject;
+    createProject.hidden = project.previewing;
     openProject.disabled = !project.canOpenProject;
-    enableEditing.disabled = !project.canEnableEditing;
+    openTemporary.disabled = project.lifecycleBusy;
+    projectName.disabled = project.lifecycleBusy;
+
+    const critical = presentation.criticalAction;
+    setHiddenSafely(returnToProject, critical !== 'return');
+    setHiddenSafely(repairProject, critical !== 'repair');
+    setHiddenSafely(enableEditing, critical !== 'enable');
+    setHiddenSafely(saveProject, critical !== 'save');
+    setHiddenSafely(compactReturn, critical !== 'return', projectShow);
+    setHiddenSafely(compactRepair, critical !== 'repair', projectShow);
+    setHiddenSafely(compactEnable, critical !== 'enable', projectShow);
+    setHiddenSafely(compactSave, critical !== 'save', projectShow);
+    setHiddenSafely(compactRecovery, !project.pendingAutosave, projectShow);
+
+    returnToProject.disabled = !project.canReturnToProject;
     repairProject.disabled = !project.canRepairProject;
-    repairProject.hidden = !project.needsRepair;
-    renameProject.disabled = !project.canWriteProject;
+    enableEditing.disabled = !project.canEnableEditing;
     saveProject.disabled = !project.canWriteProject;
+    compactReturn.disabled = !project.canReturnToProject;
+    compactRepair.disabled = !project.canRepairProject;
+    compactEnable.disabled = !project.canEnableEditing;
+    compactSave.disabled = !project.canWriteProject;
+
+    renameProject.disabled = !project.canWriteProject;
+    setHiddenSafely(renameProject, !project.canWriteProject);
     addJson.disabled = !project.canAddImport;
+    setHiddenSafely(addJson, !project.canAddImport);
     refreshImports.disabled = !project.canBrowseProject;
     importJson.disabled = !project.canImport || project.imports.length === 0;
+    setHiddenSafely(importJson, !project.canImport);
     importSelect.disabled = !project.canBrowseProject || project.imports.length === 0;
     refreshExports.disabled = !project.canBrowseProject;
     openExport.disabled = !project.canBrowseProject || project.exports.length === 0;
     restoreExport.disabled = !project.canRestoreExport || project.exports.length === 0;
+    setHiddenSafely(restoreExport, !project.canRestoreExport);
     exportSelect.disabled = !project.canBrowseProject || project.exports.length === 0;
-    returnToProject.hidden = !project.canReturnToProject;
-    returnToProject.disabled = !project.canReturnToProject;
     exportJson.disabled = !project.canExport;
-    exportAutosave.disabled = project.readOnly;
-    exportAutosave.hidden = project.readOnly;
-    autosaveActions.hidden = !project.pendingAutosave;
+    restoreAutosave.disabled = project.lifecycleBusy;
+    keepAutosave.disabled = project.lifecycleBusy;
+    exportAutosave.disabled = project.readOnly || project.lifecycleBusy;
+    setHiddenSafely(exportAutosave, project.readOnly);
+
+    setHiddenSafely(projectOnly, !hasProject, createProject);
+    setHiddenSafely(projectData, !hasProject || project.previewing);
+    setHiddenSafely(autosaveActions, !project.pendingAutosave);
+    setHiddenSafely(projectCollapse, !hasProject, createProject);
 
     if (importRefs !== project.imports) {
       importRefs = project.imports;
-      clear(importSelect);
-      if (project.imports.length === 0) {
-        importSelect.appendChild(el('option', { value: '' }, ['No imports']));
-      } else {
-        for (const ref of project.imports) {
-          importSelect.appendChild(el('option', { value: ref.id }, [ref.displayName]));
-        }
-      }
+      patchStoredSelect(importSelect, project.imports, 'No imports');
     }
-
     if (exportRefs !== project.exports) {
       exportRefs = project.exports;
-      clear(exportSelect);
-      if (project.exports.length === 0) {
-        exportSelect.appendChild(el('option', { value: '' }, ['No export copies']));
-      } else {
-        for (const ref of project.exports) {
-          exportSelect.appendChild(el('option', { value: ref.id }, [ref.displayName]));
-        }
-      }
+      patchStoredSelect(exportSelect, project.exports, 'No export copies');
     }
 
-    clear(projectMessage);
-    projectMessage.appendChild(
-      el('span', {}, [`${project.persistenceLabel} ${project.message}`]),
-    );
-
-    clear(projectHost);
-    projectHost.appendChild(
-      el('div', { class: 'project-controls' }, [
-        projectName,
-        createProject,
-        openProject,
-        enableEditing,
-        repairProject,
-        renameProject,
-        saveProject,
-        addJson,
-        refreshImports,
-        importSelect,
-        importJson,
-        refreshExports,
-        exportSelect,
-        openExport,
-        restoreExport,
-        returnToProject,
-        autosaveActions,
-        projectMessage,
-      ]),
-    );
+    projectMessage.textContent = project.persistenceLabel + ' ' + project.message;
+    applyLayout();
+    if (committedDifferentProject) {
+      scheduleFocus(() => (projectRail.hidden ? null : projectCollapse));
+    }
   }
 
   return {
     destroy(): void {
+      destroyed = true;
+      layoutToken += 1;
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      if (paintFrame !== null) cancelAnimationFrame(paintFrame);
+      if (focusFrame !== null) cancelAnimationFrame(focusFrame);
+      resizeFrame = null;
+      paintFrame = null;
+      focusFrame = null;
       unsubscribe();
       unsubscribeProject();
       document.removeEventListener('keydown', onKey);
@@ -857,6 +1544,19 @@ export function canvasHostOf(root: HTMLElement): HTMLElement {
   const host = root.querySelector('.canvas-host');
   if (host === null) throw new Error('the canvas host was not mounted');
   return host as HTMLElement;
+}
+
+function isInteractionEvent(event: KeyboardEvent): boolean {
+  const interactiveTags = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON']);
+  for (const target of event.composedPath()) {
+    if (!(target instanceof Element)) continue;
+    if (interactiveTags.has(target.tagName)) return true;
+    if (target instanceof HTMLAnchorElement && target.hasAttribute('href')) return true;
+    if (target instanceof HTMLElement && target.isContentEditable) return true;
+    const role = target.getAttribute('role');
+    if (role === 'combobox' || role === 'listbox' || role === 'option') return true;
+  }
+  return false;
 }
 
 function isPickerCancellation(err: unknown): boolean {
