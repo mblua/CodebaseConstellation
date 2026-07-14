@@ -1028,6 +1028,73 @@ describe('backup and stored-document invariants', () => {
 });
 
 describe('autosave, export and permissions', () => {
+  it('re-arms exactly one dirty autosave after Keep current invalidates the pending timer', async () => {
+    vi.useFakeTimers();
+    const store = new FakeProjectStore();
+    const revision = computeDocRevision(store.snapshot.currentText);
+    store.snapshot = {
+      ...store.snapshot,
+      autosaveViewText: autosaveViewText({
+        schema: 'visual-specs.autosave-view',
+        formatVersion: '1.0',
+        projectId: 'project-1',
+        docId: 'doc-1',
+        baseRevision: revision,
+        savedAtUtc: '2026-07-14T06:00:00.000Z',
+        view: { viewport: { x: 1, y: 2, zoom: 1.5 } },
+      }),
+    };
+    const { controller, project } = boot(store);
+    await project.openProject();
+    await project.enableEditing();
+    expect(project.snapshot().pendingAutosave).toBe(true);
+
+    controller.dispatch({ type: 'SetViewport', viewport: { x: 8, y: 9, zoom: 1.3 } });
+    project.keepCurrentView();
+    expect(project.snapshot()).toMatchObject({ dirty: true, pendingAutosave: false });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(store.autosaveWrites).toBe(1);
+  });
+
+  it('does not re-arm Keep current autosave for clean or read-only sessions', async () => {
+    vi.useFakeTimers();
+
+    const cleanStore = new FakeProjectStore();
+    const revision = computeDocRevision(cleanStore.snapshot.currentText);
+    cleanStore.snapshot = {
+      ...cleanStore.snapshot,
+      autosaveViewText: autosaveViewText({
+        schema: 'visual-specs.autosave-view',
+        formatVersion: '1.0',
+        projectId: 'project-1',
+        docId: 'doc-1',
+        baseRevision: revision,
+        savedAtUtc: '2026-07-14T06:00:00.000Z',
+        view: { viewport: { x: 1, y: 2, zoom: 1.5 } },
+      }),
+    };
+    const clean = boot(cleanStore);
+    await clean.project.openProject();
+    await clean.project.enableEditing();
+    clean.project.keepCurrentView();
+
+    const readonlyStore = new FakeProjectStore();
+    readonlyStore.snapshot = { ...cleanStore.snapshot, access: 'readonly' };
+    const readonly = boot(readonlyStore);
+    await readonly.project.openProject();
+    readonly.controller.dispatch({
+      type: 'SetViewport',
+      viewport: { x: 8, y: 9, zoom: 1.3 },
+    });
+    readonly.project.keepCurrentView();
+
+    await vi.advanceTimersByTimeAsync(400);
+    expect(cleanStore.autosaveWrites).toBe(0);
+    expect(readonly.project.snapshot()).toMatchObject({ access: 'readonly', dirty: true });
+    expect(readonlyStore.autosaveWrites).toBe(0);
+  });
+
   it('re-arms dirty autosave after a successful non-session foreground operation', async () => {
     vi.useFakeTimers();
     const { controller, project, store } = boot();

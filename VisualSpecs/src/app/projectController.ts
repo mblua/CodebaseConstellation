@@ -683,6 +683,7 @@ export class ProjectController {
     this.invalidateOperations();
     this.project = { ...this.project, pendingAutosave: undefined };
     this.message = 'Kept current view.';
+    this.scheduleAutosave();
     this.notify();
   }
 
