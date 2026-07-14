@@ -1,0 +1,48 @@
+
+Running 2 tests using 1 worker
+
+HIDDEN_TRANSITION_FOCUS={"access":"editable","focusAfterPreview":{"tag":"BODY","id":"","text":"ProjectCollapse project railProject preview: Independent editable ownerProject nameCreate ProjectOpen ProjectProject Independent editable owner. Project ID 82d754e0-819c-4f22-9463-6608fd4ef20a.Project previewIndependent editable ownerProject ID82d754e0-819c-4f22-9463-\n6608fd4ef20aProject access: editable · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveProject dataRenameAdd JSONRefresh importsNo importsImport JSONRefresh exports20260714-225449_Independent-editable-owner.jsonOpen export copyRestore from exportRestore viewKeep currentExport autosave copyDocumentOpen JSON temporarilyExport JSONProject access: editable. Preview only; the project remains open and export uses save picker. Previewing export copy 20260714-225449_Independent-editable-owner.json. Use Return to project when done.Show project railProject Independent editable owner. Project ID 82d754e0-819c-4f22-9463-6608fd4ef20a.Independent editable ownerID82d754e0...fd4ef20aProject access: editable · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveRecovery available◈Visual SpecsExplorerDetailsFit−+Expand allCollapse allReset layoutCoverage: rust-importsdegradedno macro expansion, no #[path], no cfg evaluation; glob imports are unresolved and item-level symbols are not resolved118 unresolved relation(s) were seen but not guessed at. They are listed in the document, with evidence.Nodes744Relations1609Drawn14Folded away1419AgentsCommanderrepository@mblua/agentscommander (cli)applicationAgents Commander (desktop)applicationagentscommander (web)applicationagentscommander-api-helperapplicationsession-bridgeapplication@mblua/agentscommanderpackageagentscommanderpackageagentscommander-newcratesession-bridgecrateLegendapplicationcratedirectoryfilepackagerepositorybundlesentrypointimportsrust-importstauri-commandweb-commandhide testsNothing selected.Click a box to see what it is and what is hidden inside it. Click a line to see every relation behind it, with its evidence. Double-click to expand or collapse.","body":true,"inHiddenRecovery":false,"trustedOpenExport":true}}
+  x  1 physical-focus.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B (3.5s)
+HIDDEN_TRANSITION_FOCUS={"access":"readonly","focusAfterPreview":{"tag":"BODY","id":"","text":"ProjectCollapse project railProject preview: Independent readonly ownerProject nameCreate ProjectOpen ProjectProject Independent readonly owner. Project ID 1606e00b-7025-44ca-be67-dc495d225214.Project previewIndependent readonly ownerProject ID1606e00b-7025-44ca-be67-\ndc495d225214Project access: read-only · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveProject dataRenameAdd JSONRefresh importsNo importsImport JSONRefresh exports20260714-225453_Independent-readonly-owner.jsonOpen export copyRestore from exportRestore viewKeep currentExport autosave copyDocumentOpen JSON temporarilyExport JSONProject access: read-only. Preview only; the project remains open and export uses save picker. Previewing export copy 20260714-225453_Independent-readonly-owner.json. Use Return to project when done.Show project railProject Independent readonly owner. Project ID 1606e00b-7025-44ca-be67-dc495d225214.Independent readonly ownerID1606e00b...5d225214Project access: read-only · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveRecovery available◈Visual SpecsExplorerDetailsFit−+Expand allCollapse allReset layoutCoverage: rust-importsdegradedno macro expansion, no #[path], no cfg evaluation; glob imports are unresolved and item-level symbols are not resolved118 unresolved relation(s) were seen but not guessed at. They are listed in the document, with evidence.Nodes744Relations1609Drawn14Folded away1419AgentsCommanderrepository@mblua/agentscommander (cli)applicationAgents Commander (desktop)applicationagentscommander (web)applicationagentscommander-api-helperapplicationsession-bridgeapplication@mblua/agentscommanderpackageagentscommanderpackageagentscommander-newcratesession-bridgecrateLegendapplicationcratedirectoryfilepackagerepositorybundlesentrypointimportsrust-importstauri-commandweb-commandhide testsNothing selected.Click a box to see what it is and what is hidden inside it. Click a line to see every relation behind it, with its evidence. Double-click to expand or collapse.","body":true,"inHiddenRecovery":false,"trustedOpenExport":true}}
+  x  2 physical-focus.spec.ts:22:7 › readonly Preview guard survives stale DOM invocation and returns recovery to owner B (3.0s)
+
+
+  1) physical-focus.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: false
+    Received: true
+
+      72 |       console.log('HIDDEN_TRANSITION_FOCUS=' + JSON.stringify({ access, focusAfterPreview }));
+      73 |       expect(focusAfterPreview.trustedOpenExport).toBe(true);
+    > 74 |       expect(focusAfterPreview.body).toBe(false);
+         |                                      ^
+      75 |       expect(focusAfterPreview.inHiddenRecovery).toBe(false);
+      76 |
+      77 |       const recoveryButtons = page.locator('.autosave-actions button');
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\physical-focus.spec.ts:74:38
+
+    Error Context: results\physical-focus\physical-focus-editable-Pr-0b5d5-returns-recovery-to-owner-B\error-context.md
+
+  2) physical-focus.spec.ts:22:7 › readonly Preview guard survives stale DOM invocation and returns recovery to owner B 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: false
+    Received: true
+
+      72 |       console.log('HIDDEN_TRANSITION_FOCUS=' + JSON.stringify({ access, focusAfterPreview }));
+      73 |       expect(focusAfterPreview.trustedOpenExport).toBe(true);
+    > 74 |       expect(focusAfterPreview.body).toBe(false);
+         |                                      ^
+      75 |       expect(focusAfterPreview.inHiddenRecovery).toBe(false);
+      76 |
+      77 |       const recoveryButtons = page.locator('.autosave-actions button');
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\physical-focus.spec.ts:74:38
+
+    Error Context: results\physical-focus\physical-focus-readonly-Pr-49ea6-returns-recovery-to-owner-B\error-context.md
+
+  2 failed
+    physical-focus.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B 
+    physical-focus.spec.ts:22:7 › readonly Preview guard survives stale DOM invocation and returns recovery to owner B 

@@ -1,0 +1,81 @@
+
+Running 7 tests using 1 worker
+
+  x  1 final-gate.spec.ts:19:5 › preview recovery export must use the underlying project document (1.0m)
+  x  2 final-gate.spec.ts:79:5 › editable Preview must not write a wrong-document recovery copy into project exports (1.0m)
+BOUNDARY_STRESS_EVIDENCE=[{"dpr":1,"layout":{"band":"wide","projectPreference":"expanded","sidebarPreference":"closed","detailPreference":"open","activeOverlay":null,"projectOpen":true,"sidebarOpen":false,"detailOpen":true,"timings":[{"band":"wide","durationMs":30.299999997019768},{"band":"wide","durationMs":4.600000001490116},{"band":"wide","durationMs":12.399999998509884},{"band":"wide","durationMs":29.600000001490116},{"band":"wide","durationMs":25.199999999254942},{"band":"hybrid","durationMs":15.400000002235174},{"band":"hybrid","durationMs":28.599999997764826},{"band":"wide","durationMs":17.199999999254942},{"band":"wide","durationMs":4.5}],"pendingFrames":{"resize":false,"paint":false,"focus":false},"canvas":{"x":192,"y":124.5,"width":1108,"height":848.5,"top":124.5,"right":1300,"bottom":973,"left":192}},"metrics":{"cssWidth":1108,"clientWidth":1108,"clientHeight":849,"backingWidth":1108,"backingHeight":849},"pageErrors":[]},{"dpr":2,"layout":{"band":"wide","projectPreference":"expanded","sidebarPreference":"closed","detailPreference":"open","activeOverlay":null,"projectOpen":true,"sidebarOpen":false,"detailOpen":true,"timings":[{"band":"wide","durationMs":30.400000002235174},{"band":"wide","durationMs":189.30000000074506},{"band":"wide","durationMs":14},{"band":"wide","durationMs":30.599999997764826},{"band":"wide","durationMs":25},{"band":"hybrid","durationMs":12.899999998509884},{"band":"hybrid","durationMs":21.200000002980232},{"band":"hybrid","durationMs":30.799999997019768},{"band":"wide","durationMs":19.699999999254942},{"band":"wide","durationMs":7.399999998509884}],"pendingFrames":{"resize":false,"paint":false,"focus":false},"canvas":{"x":192,"y":124.5,"width":1108,"height":848.5,"top":124.5,"right":1300,"bottom":973,"left":192}},"metrics":{"cssWidth":1108,"clientWidth":1108,"clientHeight":849,"backingWidth":2216,"backingHeight":1698},"pageErrors":[]}]
+  ok 3 final-gate.spec.ts:127:5 › boundary and toggle bursts preserve one overlay, focus, preferences, and DPR backing (4.4s)
+PERMISSION_ACTIVATION_EVIDENCE={"calls":1,"activations":[true],"directoryActivations":[true]}
+  ok 4 final-gate.spec.ts:221:5 › collapsed compact Enable editing retains trusted permission activation (2.5s)
+  x  5 final-gate.spec.ts:248:5 › Preview Restore view exposes the cross-owner recovery mutation (1.0m)
+KEEP_DOUBLE_CLICK_EVIDENCE={"before":{"directory":1,"save":0},"after":{"directory":1,"save":0,"project":{"phase":"project","sessionKind":"project","displayLabel":"Double activation owner","manifestProjectId":"331f8414-57f3-4d89-a720-b34358759a6b","projectKey":"fsa-1","access":"readonly","name":"Double activation owner","readOnly":false,"dirty":false,"projectDirty":false,"hasDiscardableChanges":false,"previewing":false,"needsRepair":false,"corruptAutosaveIgnored":false,"lifecycleBusy":false,"canCreateProject":true,"canOpenProject":true,"canEnableEditing":true,"canRepairProject":false,"canWriteProject":false,"canAddImport":false,"canImport":false,"canBrowseProject":true,"canRestoreExport":false,"canReturnToProject":false,"canExport":true,"persistenceLabel":"Project access: read-only. Export uses save picker.","message":"Kept current view.","pendingAutosave":false,"imports":[],"exports":[]},"pageErrors":[]}}
+  ok 6 final-gate.spec.ts:286:5 › physical Keep-current double click cannot activate a shifted control (2.8s)
+RESTORE_DOUBLE_CLICK_EVIDENCE={"before":{"backups":[],"directory":1,"save":0},"after":{"backups":["20260714-224452_current.json"],"directory":1,"save":0,"pageErrors":[]}}
+  ok 7 final-gate.spec.ts:325:5 › physical Restore double click commits once and activates no shifted action (2.3s)
+
+
+  1) final-gate.spec.ts:19:5 › preview recovery export must use the underlying project document ────
+
+    Test timeout of 60000ms exceeded.
+
+    Error: locator.click: Test timeout of 60000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Export autosave copy', exact: true })
+
+
+      48 |       pendingAutosave: true,
+      49 |     });
+    > 50 |     await page.getByRole('button', { name: 'Export autosave copy', exact: true }).click();
+         |                                                                                   ^
+      51 |     await expect.poll(() => harnessValue<number>(page, 'saveCalls')).toBe(1);
+      52 |     await expect(page.locator('.project-message')).toContainText('Exported autosave copy');
+      53 |
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\final-gate.spec.ts:50:83
+
+    Error Context: results\final-gate\final-gate-preview-recover-816fc-underlying-project-document\error-context.md
+
+  2) final-gate.spec.ts:79:5 › editable Preview must not write a wrong-document recovery copy into project exports 
+
+    Test timeout of 60000ms exceeded.
+
+    Error: locator.click: Test timeout of 60000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Export autosave copy', exact: true })
+
+
+       99 |     const beforeFiles = await readProjectExports(page, rootName);
+      100 |
+    > 101 |     await page.getByRole('button', { name: 'Export autosave copy', exact: true }).click();
+          |                                                                                   ^
+      102 |     await expect(page.locator('.project-message')).toContainText('using project-export');
+      103 |     const afterFiles = await readProjectExports(page, rootName);
+      104 |     const newNames = Object.keys(afterFiles).filter((name) => !(name in beforeFiles));
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\final-gate.spec.ts:101:83
+
+    Error Context: results\final-gate\final-gate-editable-Previe-16c93-y-copy-into-project-exports\error-context.md
+
+  3) final-gate.spec.ts:248:5 › Preview Restore view exposes the cross-owner recovery mutation ─────
+
+    Test timeout of 60000ms exceeded.
+
+    Error: locator.click: Test timeout of 60000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Restore view', exact: true })
+
+
+      262 |
+      263 |     const before = await readProjectState(page);
+    > 264 |     await page.getByRole('button', { name: 'Restore view', exact: true }).click();
+          |                                                                           ^
+      265 |     const after = await readProjectState(page);
+      266 |     const viewport = await page.evaluate(() => {
+      267 |       const hook = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\final-gate.spec.ts:264:75
+
+    Error Context: results\final-gate\final-gate-Preview-Restore-58a92-oss-owner-recovery-mutation\error-context.md
+
+  3 failed
+    final-gate.spec.ts:19:5 › preview recovery export must use the underlying project document ─────
+    final-gate.spec.ts:79:5 › editable Preview must not write a wrong-document recovery copy into project exports 
+    final-gate.spec.ts:248:5 › Preview Restore view exposes the cross-owner recovery mutation ──────
+  4 passed (3.3m)

@@ -1,0 +1,27 @@
+
+Running 1 test using 1 worker
+
+HIDDEN_TRANSITION_FOCUS={"access":"editable","focusAfterPreview":{"tag":"BODY","id":"","text":"ProjectCollapse project railProject preview: Independent editable ownerProject nameCreate ProjectOpen ProjectProject Independent editable owner. Project ID db99e322-d574-4d4d-a941-b5965c4b5ac3.Project previewIndependent editable ownerProject IDdb99e322-d574-4d4d-a941-\nb5965c4b5ac3Project access: editable · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveProject dataRenameAdd JSONRefresh importsNo importsImport JSONRefresh exports20260714-224730_Independent-editable-owner.jsonOpen export copyRestore from exportRestore viewKeep currentExport autosave copyDocumentOpen JSON temporarilyExport JSONProject access: editable. Preview only; the project remains open and export uses save picker. Previewing export copy 20260714-224730_Independent-editable-owner.json. Use Return to project when done.Show project railProject Independent editable owner. Project ID db99e322-d574-4d4d-a941-b5965c4b5ac3.Independent editable ownerIDdb99e322...5c4b5ac3Project access: editable · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveRecovery available◈Visual SpecsExplorerDetailsFit−+Expand allCollapse allReset layoutCoverage: rust-importsdegradedno macro expansion, no #[path], no cfg evaluation; glob imports are unresolved and item-level symbols are not resolved118 unresolved relation(s) were seen but not guessed at. They are listed in the document, with evidence.Nodes744Relations1609Drawn14Folded away1419AgentsCommanderrepository@mblua/agentscommander (cli)applicationAgents Commander (desktop)applicationagentscommander (web)applicationagentscommander-api-helperapplicationsession-bridgeapplication@mblua/agentscommanderpackageagentscommanderpackageagentscommander-newcratesession-bridgecrateLegendapplicationcratedirectoryfilepackagerepositorybundlesentrypointimportsrust-importstauri-commandweb-commandhide testsNothing selected.Click a box to see what it is and what is hidden inside it. Click a line to see every relation behind it, with its evidence. Double-click to expand or collapse.","body":true,"inHiddenRecovery":false}}
+  x  1 regate.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B (3.5s)
+
+
+  1) regate.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: false
+    Received: true
+
+      68 |       });
+      69 |       console.log('HIDDEN_TRANSITION_FOCUS=' + JSON.stringify({ access, focusAfterPreview }));
+    > 70 |       expect(focusAfterPreview.body).toBe(false);
+         |                                      ^
+      71 |       expect(focusAfterPreview.inHiddenRecovery).toBe(false);
+      72 |
+      73 |       const recoveryButtons = page.locator('.autosave-actions button');
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\regate.spec.ts:70:38
+
+    Error Context: results\regate-editable-retry\regate-editable-Preview-gu-ad455-returns-recovery-to-owner-B\error-context.md
+
+  1 failed
+    regate.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B 

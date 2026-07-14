@@ -7,7 +7,10 @@ preservation was made on 2026-07-14 from branch
 `d4e608ba46added76d39bbda27339604c897e914`.
 
 The nine harness/config files under
-`VisualSpecs/tests/adversarial/issue-7/semantic/` are byte-for-byte copies.
+`VisualSpecs/docs/evidence/issue-7/semantic/harnesses/` are byte-for-byte copies.
+They deliberately live outside active `tests/**` discovery: their imports and
+paths describe the historical WG4 replicas and are replayed only from adapted,
+disposable copies.
 Their source was:
 
 ```text

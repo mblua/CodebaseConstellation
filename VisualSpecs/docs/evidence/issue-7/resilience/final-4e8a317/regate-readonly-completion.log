@@ -1,0 +1,55 @@
+
+Running 3 tests using 1 worker
+
+HIDDEN_TRANSITION_FOCUS={"access":"editable","focusAfterPreview":{"tag":"BODY","id":"","text":"ProjectCollapse project railProject preview: Independent editable ownerProject nameCreate ProjectOpen ProjectProject Independent editable owner. Project ID 382a5c31-6fe0-4625-a3be-fc1ead15713c.Project previewIndependent editable ownerProject ID382a5c31-6fe0-4625-a3be-\nfc1ead15713cProject access: editable · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveProject dataRenameAdd JSONRefresh importsNo importsImport JSONRefresh exports20260714-225109_Independent-editable-owner.jsonOpen export copyRestore from exportRestore viewKeep currentExport autosave copyDocumentOpen JSON temporarilyExport JSONProject access: editable. Preview only; the project remains open and export uses save picker. Previewing export copy 20260714-225109_Independent-editable-owner.json. Use Return to project when done.Show project railProject Independent editable owner. Project ID 382a5c31-6fe0-4625-a3be-fc1ead15713c.Independent editable ownerID382a5c31...ad15713cProject access: editable · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveRecovery available◈Visual SpecsExplorerDetailsFit−+Expand allCollapse allReset layoutCoverage: rust-importsdegradedno macro expansion, no #[path], no cfg evaluation; glob imports are unresolved and item-level symbols are not resolved118 unresolved relation(s) were seen but not guessed at. They are listed in the document, with evidence.Nodes744Relations1609Drawn14Folded away1419AgentsCommanderrepository@mblua/agentscommander (cli)applicationAgents Commander (desktop)applicationagentscommander (web)applicationagentscommander-api-helperapplicationsession-bridgeapplication@mblua/agentscommanderpackageagentscommanderpackageagentscommander-newcratesession-bridgecrateLegendapplicationcratedirectoryfilepackagerepositorybundlesentrypointimportsrust-importstauri-commandweb-commandhide testsNothing selected.Click a box to see what it is and what is hidden inside it. Click a line to see every relation behind it, with its evidence. Double-click to expand or collapse.","body":true,"inHiddenRecovery":false}}
+RESPONSIVE_PRECONDITION={"access":"editable","responsivePrecondition":{"band":"hybrid","projectPreference":"expanded","sidebarPreference":"open","detailPreference":"open","activeOverlay":null,"projectOpen":false,"sidebarOpen":true,"detailOpen":true,"timings":[{"band":"hybrid","durationMs":6.400000002235174},{"band":"hybrid","durationMs":178},{"band":"hybrid","durationMs":28.600000001490116},{"band":"hybrid","durationMs":2.800000000745058},{"band":"hybrid","durationMs":96.40000000223517},{"band":"narrow","durationMs":6.699999999254942},{"band":"hybrid","durationMs":16}],"pendingFrames":{"resize":false,"paint":false,"focus":false},"canvas":{"x":290,"y":172.5,"width":993,"height":600.5,"top":172.5,"right":1283,"bottom":773,"left":290}}}
+OWNER_REGATE_EVIDENCE={"access":"editable","guardError":"Return to the project","recoveryMarker":"UNDERLYING-B","previewMarker":null,"destination":"project-export","trusted":true,"pageErrors":[]}
+  x  1 regate-readonly-completion.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B (6.0s)
+HIDDEN_TRANSITION_FOCUS={"access":"readonly","focusAfterPreview":{"tag":"BODY","id":"","text":"ProjectCollapse project railProject preview: Independent readonly ownerProject nameCreate ProjectOpen ProjectProject Independent readonly owner. Project ID f41d24c0-825c-4396-be09-7c3295fd4eed.Project previewIndependent readonly ownerProject IDf41d24c0-825c-4396-be09-\n7c3295fd4eedProject access: read-only · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveProject dataRenameAdd JSONRefresh importsNo importsImport JSONRefresh exports20260714-225116_Independent-readonly-owner.jsonOpen export copyRestore from exportRestore viewKeep currentExport autosave copyDocumentOpen JSON temporarilyExport JSONProject access: read-only. Preview only; the project remains open and export uses save picker. Previewing export copy 20260714-225116_Independent-readonly-owner.json. Use Return to project when done.Show project railProject Independent readonly owner. Project ID f41d24c0-825c-4396-be09-7c3295fd4eed.Independent readonly ownerIDf41d24c0...95fd4eedProject access: read-only · Preview · Recovery availableReturn to projectRepair projectEnable editingSaveRecovery available◈Visual SpecsExplorerDetailsFit−+Expand allCollapse allReset layoutCoverage: rust-importsdegradedno macro expansion, no #[path], no cfg evaluation; glob imports are unresolved and item-level symbols are not resolved118 unresolved relation(s) were seen but not guessed at. They are listed in the document, with evidence.Nodes744Relations1609Drawn14Folded away1419AgentsCommanderrepository@mblua/agentscommander (cli)applicationAgents Commander (desktop)applicationagentscommander (web)applicationagentscommander-api-helperapplicationsession-bridgeapplication@mblua/agentscommanderpackageagentscommanderpackageagentscommander-newcratesession-bridgecrateLegendapplicationcratedirectoryfilepackagerepositorybundlesentrypointimportsrust-importstauri-commandweb-commandhide testsNothing selected.Click a box to see what it is and what is hidden inside it. Click a line to see every relation behind it, with its evidence. Double-click to expand or collapse.","body":true,"inHiddenRecovery":false}}
+RESPONSIVE_PRECONDITION={"access":"readonly","responsivePrecondition":{"band":"narrow","projectPreference":"expanded","sidebarPreference":"open","detailPreference":"open","activeOverlay":null,"projectOpen":false,"sidebarOpen":false,"detailOpen":false,"timings":[{"band":"narrow","durationMs":4.699999999254942},{"band":"narrow","durationMs":182.10000000149012},{"band":"narrow","durationMs":19.699999999254942},{"band":"narrow","durationMs":6.800000000745058},{"band":"narrow","durationMs":16.699999999254942}],"pendingFrames":{"resize":false,"paint":false,"focus":false},"canvas":{"x":0,"y":260,"width":800,"height":513,"top":260,"right":800,"bottom":773,"left":0}}}
+OWNER_REGATE_EVIDENCE={"access":"readonly","guardError":"Return to the project","recoveryMarker":"UNDERLYING-B","previewMarker":null,"destination":"save-picker","trusted":true,"pageErrors":[]}
+  x  2 regate-readonly-completion.spec.ts:22:7 › readonly Preview guard survives stale DOM invocation and returns recovery to owner B (6.1s)
+AUTOSAVE_REGATE_EVIDENCE={"writesDuringPreview":0,"writesAfterReturn":1,"dirtyViewport":{"x":81.80000000000001,"y":84.89999999999998,"zoom":1.25},"savedViewport":{"x":81.80000000000001,"y":84.89999999999998,"zoom":1.25},"pageErrors":[]}
+  ok 3 regate-readonly-completion.spec.ts:263:5 › dirty underlying autosave is cancelled in Preview and rearmed exactly once after Return (4.5s)
+
+
+  1) regate-readonly-completion.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: false
+    Received: true
+
+      68 |       });
+      69 |       console.log('HIDDEN_TRANSITION_FOCUS=' + JSON.stringify({ access, focusAfterPreview }));
+    > 70 |       expect.soft(focusAfterPreview.body).toBe(false);
+         |                                           ^
+      71 |       expect(focusAfterPreview.inHiddenRecovery).toBe(false);
+      72 |
+      73 |       const recoveryButtons = page.locator('.autosave-actions button');
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\regate-readonly-completion.spec.ts:70:43
+
+    Error Context: results\regate-readonly-completion\regate-readonly-completion-b2fe1-returns-recovery-to-owner-B\error-context.md
+
+  2) regate-readonly-completion.spec.ts:22:7 › readonly Preview guard survives stale DOM invocation and returns recovery to owner B 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: false
+    Received: true
+
+      68 |       });
+      69 |       console.log('HIDDEN_TRANSITION_FOCUS=' + JSON.stringify({ access, focusAfterPreview }));
+    > 70 |       expect.soft(focusAfterPreview.body).toBe(false);
+         |                                           ^
+      71 |       expect(focusAfterPreview.inHiddenRecovery).toBe(false);
+      72 |
+      73 |       const recoveryButtons = page.locator('.autosave-actions button');
+        at C:\Users\maria\0_repos\CodebaseConstellation_iac\.ac\wg-4-vs-dev-team\__agent_vs-resilience-red-team\gate-4e8a317\regate-readonly-completion.spec.ts:70:43
+
+    Error Context: results\regate-readonly-completion\regate-readonly-completion-e3c55-returns-recovery-to-owner-B\error-context.md
+
+  2 failed
+    regate-readonly-completion.spec.ts:22:7 › editable Preview guard survives stale DOM invocation and returns recovery to owner B 
+    regate-readonly-completion.spec.ts:22:7 › readonly Preview guard survives stale DOM invocation and returns recovery to owner B 
+  1 passed (20.8s)

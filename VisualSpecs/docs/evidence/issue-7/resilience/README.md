@@ -44,14 +44,14 @@ Paths are relative to the repository root.
 
 | Path | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/final-gate.config.ts` | 837 | `8E9C00CC3CF21CEB43F82963A8A20DF6B87A0FCEE84ED3F3AE31E8521D6A2E25` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/final-gate.spec.ts` | 25,542 | `D1FBF254F223F56D837019185BC75DCBCFBCB72622587D8947CBEABB92ACF804` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/regate.config.ts` | 850 | `228314A044A92E4529F69C38A902CB7865727C52CFDCB9560677C102498E7460` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/regate.spec.ts` | 25,725 | `9B27EA3235F2C8036FEB6D15B9A7AE93E934C39B69AD485739DB6DA66190A000` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/historical-premortem/harness.sh` | 3,919 | `B9C3B7EB973F15F661072C1662D4A454D78D26630E201B6F120364BF07012125` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/historical-premortem/harness2.sh` | 1,648 | `A2CBEA849320E95AC656FCE09915808707FBD061C7EF79C65648B866CEFFEC6B` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/historical-premortem/harness3.sh` | 2,816 | `E1D3D798520466F1618171166CAE88C1EB27B6F2D2D61EB1118F21FF5BB7C877` |
-| `VisualSpecs/tests/adversarial/issue-7/resilience/historical-premortem/live-verify.mjs` | 2,813 | `498802D071F65CF6D55F63E3369E939EB6F150F5A9B8343119F4C79E7A83EE3E` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/final-gate.config.ts` | 837 | `8E9C00CC3CF21CEB43F82963A8A20DF6B87A0FCEE84ED3F3AE31E8521D6A2E25` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/final-gate.spec.ts` | 25,542 | `D1FBF254F223F56D837019185BC75DCBCFBCB72622587D8947CBEABB92ACF804` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/regate.config.ts` | 850 | `228314A044A92E4529F69C38A902CB7865727C52CFDCB9560677C102498E7460` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/regate.spec.ts` | 25,725 | `9B27EA3235F2C8036FEB6D15B9A7AE93E934C39B69AD485739DB6DA66190A000` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/historical-premortem/harness.sh` | 3,919 | `B9C3B7EB973F15F661072C1662D4A454D78D26630E201B6F120364BF07012125` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/historical-premortem/harness2.sh` | 1,648 | `A2CBEA849320E95AC656FCE09915808707FBD061C7EF79C65648B866CEFFEC6B` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/historical-premortem/harness3.sh` | 2,816 | `E1D3D798520466F1618171166CAE88C1EB27B6F2D2D61EB1118F21FF5BB7C877` |
+| `VisualSpecs/docs/evidence/issue-7/resilience/harnesses/historical-premortem/live-verify.mjs` | 2,813 | `498802D071F65CF6D55F63E3369E939EB6F150F5A9B8343119F4C79E7A83EE3E` |
 | `VisualSpecs/docs/evidence/issue-7/resilience/final-gate-results/.last-run.json` | 96 | `7C8592927FE325E6DEDFF2193D676AC36A7786C58030964705A8173C8306C445` |
 | `VisualSpecs/docs/evidence/issue-7/resilience/final-gate-results/final-gate-editable-Previe-16c93-y-copy-into-project-exports/error-context.md` | 19,428 | `57FD3F24A7928112B5042482325A1CD4AADAF66FACDDC3F4FD305E7EDF0744CC` |
 | `VisualSpecs/docs/evidence/issue-7/resilience/regate-results/.last-run.json` | 145 | `4B44EE0C26FD1313FC7FD8848129AC9E43BCB2AC4CCDB0D09A57FAF9AC62245C` |
