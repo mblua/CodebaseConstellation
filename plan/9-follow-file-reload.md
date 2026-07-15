@@ -186,6 +186,7 @@ A background tab re-rendering a large graph on every extractor cycle wastes batt
 - `VisualSpecs/tests/app/projectController.test.ts` (fake followable sources)
 - `VisualSpecs/tests/app/controller.test.ts` (Refresh selection carry-over)
 - `VisualSpecs/tests/smoke/followFile.spec.ts` (new; real adapter over OPFS + stubbed picker, following `projectUi.spec.ts` precedent)
+- `VisualSpecs/playwright.config.ts` — LIMITED to one line: the `acceptance` project's testMatch gains `followFile` so the pinned spec actually runs under the gate (lead approval msg 20260715-060540; without it the spec would be a false gate).
 - `plan/9-follow-file-reload.md` (this file)
 
 Out of scope: `tools/extractor/`, `contract/`, `domain/`, `projection/`, renderer adapters, `tests/architecture/boundaries.test.ts` (must pass as-is), CI/workflow files.
@@ -223,7 +224,7 @@ Unit (vitest, fake store/source — `tests/app/projectController.test.ts`):
 - dispatch atomicity hardening (resilience A2-P3): a `derive` injected to throw after `apply` must not leave `currentState` advanced with stale derived state - pins the class; no known trigger exists today (`assertInjective` runs inside `apply`), so if this test exposes a real tear in `controller.ts` (outside my allowed files), it escalates to the lead as a scope note instead of a silent fix;
 - readOnly flip (A2-F8): reload whose document flips `readOnly` → message names the flip.
 
-Smoke (Playwright, real `FsaProjectStore` — `tests/smoke/followFile.spec.ts`, picker stubbed to return an OPFS file handle as in `projectUi.spec.ts:1778`):
+Smoke (Playwright, real `FsaProjectStore` — `tests/smoke/followFile.spec.ts`, picker stubbed to return an OPFS file handle as in `projectUi.spec.ts:1778`; the spec runs under the `acceptance` project, i.e. inside `npm run smoke` and `npm run verify`):
 
 - open via picker → rewrite the OPFS file → reload observed through the real polling path ("Refreshed." banner / message), user-moved node position preserved;
 - rewrite with truncated JSON → no state change, warning visible; complete the write → reload happens;
