@@ -1103,7 +1103,9 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
     },
   };
 
+  let lastRendered: { state: AppState; derived: Derived } | null = null;
   const unsubscribe = controller.subscribe((state, derived) => {
+    lastRendered = { state, derived };
     renderBanners(state, derived);
     renderCounts(state, derived);
     renderList(state, derived);
@@ -1490,6 +1492,9 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       announcedSeq = project.announcement.seq;
       setStatus(project.announcement.text);
     }
+    // The reload banner reads lastReloadAt from THIS snapshot; re-render it so
+    // the timestamp never lags one reload behind the message line.
+    if (lastRendered !== null) renderBanners(lastRendered.state, lastRendered.derived);
 
     const nameNeedsSync =
       project.projectKey !== renderedProjectKey ||
