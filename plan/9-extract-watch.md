@@ -133,6 +133,8 @@ Mechanism, in `output.ts`, used by watch mode **and** the one-shot path (unifyin
 
 What the reader may still observe, stated so artifact 2 can rely on it: (a) the old complete document; (b) the new complete document; (c) on Windows, a transient open failure during the replace window. Case (c) is already covered by artifact 2's own requirement to keep the last good state on any read/parse failure — so **no change to the agreed contract is requested**. If `vs-graph-runtime-dev` needs more than this (e.g. a sidecar version file), that is a contract renegotiation through the lead, not a silent addition.
 
+**Named contract promise (adopted at RFC round closure, 3-of-3, lead message `20260715-044332`):** every rewrite that changes content produces a fresh `lastModified` on `out`. Temp + rename already guarantees this — the temp file's own write time becomes the destination's timestamp — but it is now a promise, not a side effect: the implementation must never preserve or copy timestamps onto the temp or the destination (no `utimes` anywhere in `output.ts`), and the adversarial gates treat a timestamp-preserving write as a contract break, not a style finding. Combined with skip-identical (point 5), the full statement for this writer is: content change ⇔ `lastModified` change.
+
 ## Files allowed to change
 
 - `VisualSpecs/tools/extractor/cli.ts` — flags + wiring.
@@ -160,7 +162,7 @@ Integration (vitest, short `--interval`, two temp git fixture repos, real loop i
 
 5. **change → re-extract → atomic rewrite**: edit a tracked file in repo A → A's `out` is rewritten with the new content; repo B's `out` mtime is untouched (multi-repo re-extracts only the changed repo).
 6. **Watcher survives an error**: make repo A fail deterministically (tracked file with invalid UTF-8 → the existing exit-6 error), edit it → stderr carries the machine-readable error, the process stays alive, repo B still re-extracts on its own change; fix repo A → next change extracts cleanly. Also: the same broken fingerprint is not retried every tick.
-7. **Torn-file check**: a reader loop `JSON.parse`ing the `out` continuously during N≥50 rewrites never sees invalid JSON and never sees a partial document (transient open failures on Windows are retried by the test reader, mirroring the artifact-2 contract).
+7. **Torn-file check**: a reader loop `JSON.parse`ing the `out` continuously during N≥50 rewrites never sees invalid JSON and never sees a partial document (transient open failures on Windows are retried by the test reader, mirroring the artifact-2 contract). The transcript of this run is published to issue #9 as shared cross-artifact evidence (round-closure request, `20260715-044332`).
 
 Acceptance against the real corpus (evidence transcript appended to this plan at implementation time):
 
