@@ -578,8 +578,9 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
         void runProjectAction('Open temporary JSON', async () => {
           const source = await projectController.pickTemporaryJson();
           if (!confirmDestructive('open a temporary JSON document')) {
-            setStatus('Cancelled. No project or document state changed.');
-            return;
+            // Same semantics as a picker cancel: Cancelled status, and a
+            // pre-existing action error is NOT cleared by a non-action.
+            throw new DOMException('Open cancelled by the user.', 'AbortError');
           }
           await projectController.openTemporarySource(source);
         });
