@@ -978,6 +978,9 @@ export class ProjectController {
     });
     this.followedSourceName = name;
     this.followStateValue = { kind: 'following', label: `Following ${name} — reloads on change` };
+    // The session install already notified with followState still 'none'; the
+    // status line must learn about the follow without waiting for the next event.
+    this.notify();
   }
 
   private stopFollowing(): void {

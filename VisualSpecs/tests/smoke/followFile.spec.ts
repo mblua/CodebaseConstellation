@@ -142,23 +142,37 @@ test('picker order (A2-P2-6): the picker runs on the click activation; a confirm
   try {
     await boot(page);
     // Make the session discardable so confirmDestructive actually asks.
-    await page.locator('#zoom-in').click();
+    await page.locator('.node-row').first().click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hooks = (globalThis as unknown as Record<string, unknown>)['__visualSpecs'] as {
+            project(): { hasDiscardableChanges: boolean };
+          };
+          return hooks.project().hasDiscardableChanges;
+        }),
+      )
+      .toBe(true);
 
-    let confirmMessage = '';
-    page.once('dialog', (dialog) => {
-      confirmMessage = dialog.message();
+    const dialogs: string[] = [];
+    const onDialog = (dialog: import('@playwright/test').Dialog): void => {
+      dialogs.push(dialog.message());
       void dialog.dismiss();
-    });
+    };
+    page.on('dialog', onDialog);
     await page.getByRole('button', { name: 'Open JSON temporarily', exact: true }).click();
 
     // The picker already ran — BEFORE the confirm — on the click's activation.
     await expect.poll(() => harnessValue<number>(page, 'openCalls')).toBe(1);
     expect(await harnessValue<boolean[]>(page, 'openActivations')).toEqual([true]);
-    expect(confirmMessage).toMatch(/unsaved view changes/iu);
+    await expect.poll(() => dialogs.length).toBe(1);
+    expect(dialogs[0]).toMatch(/unsaved view changes/iu);
     // Cancel discarded the picked source: still the example session, no follow.
     await expect(page.locator('.status')).toContainText('Cancelled. No project or document state changed.');
     expect(await page.locator('.project-message').textContent()).not.toContain('Following');
     expect(JSON.stringify(await rawDocument(page))).toContain('AgentsCommander');
+    expect(dialogs).toHaveLength(1);
+    page.off('dialog', onDialog);
   } finally {
     await cleanup(page, rootName);
   }
