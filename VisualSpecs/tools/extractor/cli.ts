@@ -1,17 +1,39 @@
 // npm run extract -- --repo <path> --out data/agentscommander.json
+// npm run extract -- --watch --config .local/extract-watch.json
 //
 // Every failure is deterministic, carries a distinct non-zero exit code, and says
-// what to do about it (§10.6).
+// what to do about it (§10.6). This file is WIRING: option assembly lives in
+// watchconfig.ts (shared with the config parser — one composition point for
+// `generator.flags`), atomic publication in output.ts, the loop in watch.ts.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { relative } from 'node:path';
 import { EXIT, ExtractorError } from './errors.ts';
 import { assertOutputInsideRoot } from './confine.ts';
-import { extract, type ExtractOptions } from './extract.ts';
+import { extract, type ExtractResult } from './extract.ts';
+import {
+  assembleExtractOptions,
+  assertOutsOutsideWatchedRepos,
+  effectiveLabel,
+  parseCliArgs,
+  parseWatchConfig,
+  type ExtractInputs,
+  type WatchTarget,
+} from './watchconfig.ts';
+import { cleanStaleTemps, writeFileAtomic, writeIfChanged } from './output.ts';
+import {
+  createWatcher,
+  fingerprintRepo,
+  operationInProgress,
+  resolveGitDir,
+  type CycleTiming,
+  type WatchIo,
+} from './watch.ts';
 
 const USAGE = `visual-specs-extract
 
   npm run extract -- --repo <path-to-repo> --out <path-to-json> [options]
+  npm run extract -- --watch --config <path-to-config> [--interval <ms>]
 
 Options
   --repo <path>            the repository to map. Must be a git repository.
@@ -28,128 +50,48 @@ Options
                            document you are about to commit.
   --stamp                  record generator.generatedAt (excluded from the
                            deterministic payload)
+  --watch                  stay alive and re-extract when a watched repo changes.
+                           Output writes are atomic (temp + rename); identical
+                           output is not rewritten.
+  --config <path>          extract several repos, from a JSON file of the shape
+                           { "repos": [ { "repo", "out", ...same as flags } ] }.
+                           Without --watch: extract every entry once, in order.
+                           Mutually exclusive with the per-repo flags above.
+  --interval <ms>          watch polling interval (default 1000, minimum 100).
+                           A floor on the configured value, not a promised cadence:
+                           ticks never overlap, so the real cadence is
+                           max(interval, tick duration).
   -h, --help               this text
 `;
 
-function parseArgs(argv: readonly string[]): ExtractOptions {
-  const flags: string[] = [];
-  let repo: string | undefined;
-  let out: string | undefined;
-  let name: string | undefined;
-  let hierarchy: 'logical' | 'physical' = 'logical';
-  let invokeFacade = 'transport.invoke';
-  let allowBareInvoke = false;
-  let snippets = false;
-  let stamp = false;
-  let tsconfig: string | undefined;
+const GENERATOR_LINE = 'visual-specs-extract';
 
-  const need = (name: string, value: string | undefined): string => {
-    if (value === undefined) throw new ExtractorError(EXIT.usage, `${name} needs a value`);
-    return value;
-  };
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i] as string;
-    switch (arg) {
-      case '-h':
-      case '--help':
-        process.stdout.write(USAGE);
-        process.exit(EXIT.ok);
-        break;
-      case '--repo':
-        repo = need('--repo', argv[++i]);
-        break;
-      case '--out':
-        out = need('--out', argv[++i]);
-        break;
-      case '--name':
-        name = need('--name', argv[++i]);
-        break;
-      case '--hierarchy': {
-        const value = need('--hierarchy', argv[++i]);
-        if (value !== 'logical' && value !== 'physical') {
-          throw new ExtractorError(EXIT.usage, `--hierarchy must be logical or physical, not "${value}"`);
-        }
-        hierarchy = value;
-        flags.push('--hierarchy', value);
-        break;
-      }
-      case '--invoke-facade':
-        invokeFacade = need('--invoke-facade', argv[++i]);
-        flags.push('--invoke-facade', invokeFacade);
-        break;
-      case '--bare-invoke':
-        allowBareInvoke = true;
-        flags.push('--bare-invoke');
-        break;
-      case '--tsconfig':
-        tsconfig = need('--tsconfig', argv[++i]);
-        flags.push('--tsconfig', tsconfig);
-        break;
-      case '--snippets':
-        snippets = true;
-        flags.push('--snippets');
-        break;
-      case '--stamp':
-        stamp = true;
-        flags.push('--stamp');
-        break;
-      default:
-        throw new ExtractorError(EXIT.usage, `unknown option: ${arg}`);
-    }
-  }
-
-  if (repo === undefined) throw new ExtractorError(EXIT.usage, '--repo is required');
-  if (out === undefined) throw new ExtractorError(EXIT.usage, '--out is required');
-
-  // The default flags are recorded too, so the document always declares the
-  // configuration that produced it, not just the non-default part of it.
-  const declared = [
-    ...(name === undefined ? [] : ['--name', name]),
-    '--hierarchy',
-    hierarchy,
-    '--invoke-facade',
-    invokeFacade,
-    ...(allowBareInvoke ? ['--bare-invoke'] : []),
-    ...(snippets ? ['--snippets'] : []),
-    ...(tsconfig === undefined ? [] : ['--tsconfig', tsconfig]),
-  ];
-  void flags;
-
-  return {
-    repo,
-    out,
-    name,
-    hierarchy,
-    invokeFacade,
-    allowBareInvoke,
-    snippets,
-    tsconfig,
-    flags: declared,
-    stamp,
-  };
+function timeOfDay(): string {
+  return new Date().toTimeString().slice(0, 8);
 }
 
-function main(): void {
-  const options = parseArgs(process.argv.slice(2));
-  const workingRoot = process.cwd();
-  // Lexical containment (including the Windows cross-drive case) → exit 8;
-  // containment after following symlinks and junctions → exit 5. See confine.ts.
-  const outPath = assertOutputInsideRoot(options.out, workingRoot);
-
-  const { text, warnings, doc } = extract(options);
-
-  mkdirSync(dirname(outPath), { recursive: true });
-  // Re-check with the parent directory now on disk: `mkdir -p` follows a junction, so
-  // the path that "did not exist yet" a moment ago may now resolve somewhere else.
-  assertOutputInsideRoot(outPath, workingRoot);
-  writeFileSync(outPath, text, 'utf8');
-
+function printSummary(
+  result: ExtractResult,
+  outPath: string,
+  workingRoot: string,
+  extra: { label?: string; timing?: CycleTiming; written?: boolean } = {},
+): void {
+  const { doc, warnings } = result;
   for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
 
   const stats = doc.stats ?? {};
+  const head =
+    extra.label === undefined
+      ? `${GENERATOR_LINE}\n`
+      : `[${timeOfDay()}] ${GENERATOR_LINE} — ${extra.label}\n`;
+  let tail = `  written      ${relative(workingRoot, outPath)}\n`;
+  if (extra.written === false) tail = `  written      (unchanged — no write)\n`;
+  if (extra.timing !== undefined) {
+    const total = extra.timing.extractMs + extra.timing.writeMs;
+    tail += `  cycle        extract ${String(extra.timing.extractMs)} ms, write ${String(extra.timing.writeMs)} ms, total ${String(total)} ms\n`;
+  }
   process.stdout.write(
-    `${GENERATOR_LINE}\n` +
+    head +
       `  repo         ${doc.source?.root ?? '?'} @ ${doc.source?.commit?.slice(0, 7) ?? 'no commit'}` +
       `${doc.source?.dirty === true ? ' (DIRTY working tree)' : ''}\n` +
       `  tracked      ${String(stats['trackedFiles'] ?? 0)} files\n` +
@@ -157,11 +99,149 @@ function main(): void {
       `  edges        ${String(doc.edges.length)}  ${JSON.stringify(stats['edgesByKind'] ?? {})}\n` +
       `  unresolved   ${String(doc.unresolved?.length ?? 0)}\n` +
       `  digest       ${doc.generator?.configDigest ?? '?'}\n` +
-      `  written      ${relative(workingRoot, outPath)}\n`,
+      tail,
   );
 }
 
-const GENERATOR_LINE = 'visual-specs-extract';
+/** One-shot extraction of one target. ALWAYS writes (atomically): skip-identical is
+ *  watch-only, so mtime keeps bumping and `written` keeps telling the truth (A1-F3). */
+function runOnce(target: WatchTarget, workingRoot: string): void {
+  const result = extract(target.options);
+  const outPath = writeFileAtomic(target.options.out, result.text, workingRoot);
+  printSummary(result, outPath, workingRoot);
+}
+
+/** `--config` without `--watch`: every entry, in array order, all attempted; exit
+ *  code is the FIRST failing entry's code (0 if none fail). */
+function runBatch(targets: readonly WatchTarget[], workingRoot: string): never {
+  let firstFailure: number | undefined;
+  for (const target of targets) {
+    try {
+      runOnce(target, workingRoot);
+    } catch (err) {
+      if (err instanceof ExtractorError) {
+        process.stderr.write(`${JSON.stringify({ repo: target.label, ...err.toJSON() })}\n`);
+        firstFailure ??= err.exitCode;
+      } else {
+        process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+        firstFailure ??= 1;
+      }
+    }
+  }
+  process.exit(firstFailure ?? EXIT.ok);
+}
+
+function runWatch(targets: readonly WatchTarget[], intervalMs: number, workingRoot: string): void {
+  assertOutsOutsideWatchedRepos(targets, workingRoot);
+
+  if (targets.some((t) => t.options.stamp)) {
+    process.stderr.write(
+      'warning: --stamp under --watch makes every document differ (generatedAt), so identical ' +
+        'content is rewritten every cycle and the follow-file reader reloads for nothing.\n',
+    );
+  }
+
+  for (const target of targets) {
+    const removed = cleanStaleTemps(target.options.out, workingRoot);
+    for (const temp of removed) process.stderr.write(`warning: removed stale temp ${temp}\n`);
+  }
+
+  // Git dirs resolved ONCE and cached: linked worktrees keep their markers under
+  // the main repository's .git/worktrees/<name>/ (final pass 2).
+  const gitDirs = new Map<string, string | null>();
+  const markerFor = (root: string): string | null => {
+    if (!gitDirs.has(root)) gitDirs.set(root, resolveGitDir(root));
+    const gitDir = gitDirs.get(root) ?? null;
+    return gitDir === null ? null : operationInProgress(gitDir);
+  };
+
+  const io: WatchIo = {
+    fingerprint: fingerprintRepo,
+    opMarker: markerFor,
+    extract,
+    publish: (target, text) => writeIfChanged(target.options.out, text, workingRoot),
+    onExtracted: (target, result, timing, written, startup) => {
+      const outPath = assertOutputInsideRoot(target.options.out, workingRoot);
+      printSummary(result, outPath, workingRoot, {
+        label: `${target.label}${startup ? ' (startup pass)' : ''}`,
+        timing,
+        written,
+      });
+    },
+    onError: (target, error, phase) => {
+      const payload =
+        error instanceof ExtractorError
+          ? { repo: target.label, phase, ...error.toJSON() }
+          : {
+              repo: target.label,
+              phase,
+              error: error instanceof Error ? error.message : String(error),
+            };
+      process.stderr.write(`${JSON.stringify(payload)}\n`);
+    },
+    info: (line) => {
+      const stream = line.startsWith('warning:') ? process.stderr : process.stdout;
+      stream.write(`[${timeOfDay()}] ${line}\n`);
+    },
+    now: Date.now,
+    schedule: (fn, ms) => {
+      const handle = setTimeout(fn, ms);
+      return { cancel: () => clearTimeout(handle) };
+    },
+  };
+
+  const watcher = createWatcher(targets, intervalMs, workingRoot, io);
+
+  const shutdown = (): void => {
+    watcher.stop();
+    process.exit(EXIT.ok);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  process.stdout.write(
+    `[${timeOfDay()}] watching ${String(targets.length)} repo(s) every ${String(intervalMs)} ms — Ctrl+C to stop\n`,
+  );
+  watcher.start();
+}
+
+function main(): void {
+  const parsed = parseCliArgs(process.argv.slice(2));
+  if (parsed.kind === 'help') {
+    process.stdout.write(USAGE);
+    process.exit(EXIT.ok);
+  }
+  const command = parsed;
+  const workingRoot = process.cwd();
+
+  let targets: WatchTarget[];
+  if (command.configPath === undefined) {
+    const inputs = command.inputs as ExtractInputs;
+    targets = [{ options: assembleExtractOptions(inputs), label: effectiveLabel(inputs, workingRoot) }];
+  } else {
+    let text: string;
+    try {
+      text = readFileSync(command.configPath, 'utf8');
+    } catch (err) {
+      throw new ExtractorError(EXIT.badConfig, `cannot read --config ${command.configPath}`, {
+        cause: (err as Error).message,
+      });
+    }
+    targets = parseWatchConfig(text, workingRoot);
+  }
+
+  // Lexical containment (including the Windows cross-drive case) → exit 8;
+  // containment after following symlinks and junctions → exit 5. For EVERY target,
+  // at startup, before anything runs. See confine.ts.
+  for (const target of targets) assertOutputInsideRoot(target.options.out, workingRoot);
+
+  if (command.watch) {
+    runWatch(targets, command.intervalMs ?? 1000, workingRoot);
+    return; // the scheduled loop keeps the process alive
+  }
+  if (command.configPath !== undefined) runBatch(targets, workingRoot);
+  runOnce(targets[0] as WatchTarget, workingRoot);
+}
 
 try {
   main();

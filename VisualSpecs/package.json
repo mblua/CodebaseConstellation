@@ -20,7 +20,8 @@
     "verify": "npm run test && npm run typecheck && npm run build && npm run smoke:adapter && npm run smoke",
     "update:screenshots": "playwright test --project=screenshots",
     "extract": "node tools/extractor/cli.ts",
-    "extract:agentscommander": "node tools/extractor/cli.ts --repo ../../repo-AgentsCommander --name AgentsCommander --out data/agentscommander.json"
+    "extract:agentscommander": "node tools/extractor/cli.ts --repo ../../repo-AgentsCommander --name AgentsCommander --out data/agentscommander.json",
+    "extract:watch": "node tools/extractor/cli.ts --watch --config .local/extract-watch.json"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.1",

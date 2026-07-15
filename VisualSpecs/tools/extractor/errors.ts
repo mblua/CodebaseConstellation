@@ -23,6 +23,14 @@ export const EXIT = {
   /** `--out` is outside the working root by the letter of the path. */
   outOutsideRoot: 8,
   invalidOutput: 9,
+  /**
+   * The watch configuration is invalid — however it was spelled. Covers a malformed
+   * `--config` file (bad JSON, wrong shape, unknown keys, missing/duplicate entries)
+   * AND the cross-target validations that make a watch setup incoherent, such as an
+   * `out` landing inside a watched repository without being git-ignored there
+   * (plan/9-extract-watch.md §Config).
+   */
+  badConfig: 10,
 } as const;
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
