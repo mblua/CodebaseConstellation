@@ -41,7 +41,7 @@ export default defineConfig({
   },
   projects: [
     { name: 'adapter', testMatch: /(adapter|projectStore)\.spec\.ts/ },
-    { name: 'acceptance', testMatch: /(acceptance|projectUi)\.spec\.ts/ },
+    { name: 'acceptance', testMatch: /(acceptance|projectUi|followFile)\.spec\.ts/ },
     { name: 'screenshots', testMatch: /screenshots\.spec\.ts/ },
   ],
   webServer: {
