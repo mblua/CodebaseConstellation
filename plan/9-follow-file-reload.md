@@ -94,7 +94,7 @@ The app learns "this source can be followed" from the presence of `follow`, noth
   - **Baseline**: initialized from the open-time read, so `follow` never re-delivers the content the session already shows.
   - **Visibility**: polling pauses while `document.visibilityState === 'hidden'` and re-checks immediately on becoming visible (adapter layer may touch `document`; the arch test restricts it only in pure layers).
   - **Transient failures** (e.g. `NotFoundError` during an editor's delete-then-create save, intermittent I/O): tolerated up to 5 consecutive ticks, then `onEnded('…')`. A success resets the counter.
-  - **Permanent failures**: `NotAllowedError` (permission revoked) ends following immediately with `onEnded`.
+  - **Permanent failures**: `NotAllowedError` is confirmed before ending. The adapter queries the handle's read permission; only a non-granted answer ends following with `onEnded` (a `prompt` answer also ends it — re-prompting without a user gesture is impossible and forbidden by requirement 5). A still-granted answer means the error was a misclassified transient (e.g. a replace-window collision reported as `NotAllowedError` by some builds) and it counts against the transient budget instead. If the permission query itself is unavailable or throws, the transient budget applies — a real revocation then ends within 5 ticks anyway.
   - **Stop**: the returned function cancels the timer and listeners idempotently; `onChange`/`onEnded` are never invoked after stop returns.
 
 Oversized content (over `maxBytes`) counts as an invalid read: it is reported through the same non-blocking path and never delivered as a reload.
@@ -188,7 +188,8 @@ Unit (vitest, fake store/source — `tests/app/projectController.test.ts`):
 - delivery for a stale session (new temporary open / project open / preview in between) → ignored, follow stopped;
 - delivery during `lifecycleBusy` → applied exactly once after settle; superseded pending text never applied;
 - `onEnded` → message, no further reloads;
-- fallback source without `follow` → no follow attempted, `followingLabel` null.
+- fallback source without `follow` → no follow attempted, `followingLabel` null;
+- `NotAllowedError` permanence check: with a still-granted permission answer the follow survives and the error counts as transient; with `denied`/`prompt` it ends. (The follow loop is factored over a minimal handle surface so vitest can script this; OPFS cannot fabricate `NotAllowedError`.)
 
 Smoke (Playwright, real `FsaProjectStore` — `tests/smoke/followFile.spec.ts`, picker stubbed to return an OPFS file handle as in `projectUi.spec.ts:1778`):
 
@@ -221,7 +222,8 @@ If following misbehaves in the field (e.g. a platform's `lastModified` granulari
 
 ## Constructive decision record
 
-Pending round 1: vs-spec-core-lead (coordinator + third constructive), vs-extraction-evidence-dev (cross-artifact atomicity contract).
+- vs-spec-core-lead: `APPROVED` from the core interface, round 1, no changes required (msg 20260715-043909).
+- vs-extraction-evidence-dev: `APPROVED` from the extraction interface, round 1, no contract change (fwd in msg 20260715-044008). One non-blocking finding — `NotAllowedError` misclassification could kill a healthy follow — adopted as the round-1 amendment above (permanence check before `onEnded`) rather than recorded as accepted risk: the check is one bounded permission query on an already-failing tick, and it removes an entire false-ended class.
 
 ## Independent premortem record
 
