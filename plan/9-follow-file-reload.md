@@ -186,6 +186,7 @@ A background tab re-rendering a large graph on every extractor cycle wastes batt
 - `VisualSpecs/tests/app/projectController.test.ts` (fake followable sources)
 - `VisualSpecs/tests/app/controller.test.ts` (Refresh selection carry-over)
 - `VisualSpecs/tests/smoke/followFile.spec.ts` (new; real adapter over OPFS + stubbed picker, following `projectUi.spec.ts` precedent)
+- `VisualSpecs/tests/smoke/projectUi.spec.ts` — LIMITED to the temporary-open block (`:174-184`): it asserted the superseded confirm-before-picker order; updated to the pinned A2-P2-6 order (lead approval msg 20260715-062356).
 - `VisualSpecs/playwright.config.ts` — LIMITED to one line: the `acceptance` project's testMatch gains `followFile` so the pinned spec actually runs under the gate (lead approval msg 20260715-060540; without it the spec would be a false gate).
 - `plan/9-follow-file-reload.md` (this file)
 
@@ -239,7 +240,7 @@ Lane evidence (scripted, attached to issue #9):
 - **Cross-artifact**: run the sibling `--watch` extractor against a repo, confirm change → re-extract → auto-reload closes the loop.
 - **Safe-save editors (resilience A2-P3)**: manual evidence run - rewrite the followed file via VS Code save, vim `:w`, and `sed -i` (delete+create patterns included) and confirm the handle still resolves and the reload fires; this exercises the "handle silently orphaned by a safe-save dance" class that OPFS smoke cannot.
 
-Gates: `npm run verify` green; architecture test unchanged and green.
+Gates: `npm run verify` green; architecture test unchanged and green. `projectUi.spec.ts` is back to 39/39 after its temporary-open block was updated to the pinned picker-first order (see Allowed artifacts) — a historical 38/39 during implementation was that block still asserting the superseded order.
 
 ## Rollback and recovery
 
