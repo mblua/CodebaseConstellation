@@ -14,6 +14,7 @@ import { OwnershipOutline, assertInjective } from '../domain/outline.ts';
 import { applyViewCommand, initialExpanded, type CommandContext, type ViewCommand } from '../domain/commands.ts';
 import { withExpanded } from '../contract/view.ts';
 import type { InternalBucketId, VisibleEdgeId } from '../projection/types.ts';
+import { project } from '../projection/project.ts';
 import { matchNodes } from './search.ts';
 
 export interface Filters {
@@ -129,6 +130,31 @@ function carryFilters(previous: AppState, next: AppState): Filters {
   };
 }
 
+/**
+ * The selection survives a refresh for ids the new document still has. A visible
+ * edge or internal bucket id is a projection-level identity, so survival is
+ * checked against the projection of the NEW model under the carried expansion —
+ * the same projection `derive` computes right after. This runs only when an edge
+ * is actually selected.
+ */
+function carrySelection(previous: AppState, next: AppState): AppState['selection'] {
+  const nodeIds = previous.selection.nodeIds.filter((id) =>
+    next.model.nodeById.has(next.outline.entityOf(id)),
+  );
+  let edgeId = previous.selection.edgeId;
+  if (edgeId !== null) {
+    const graph = project(next.model, next.outline, next.view.expanded);
+    if (
+      !graph.visibleEdgeById.has(edgeId as VisibleEdgeId) &&
+      !graph.internalBucketById.has(edgeId as InternalBucketId)
+    ) {
+      edgeId = null;
+    }
+  }
+  if (nodeIds.length === 0 && edgeId === null) return { nodeIds: [], edgeId: null };
+  return { nodeIds, edgeId };
+}
+
 export function apply(state: AppState, cmd: AppCommand, ctx: CommandContext): AppState {
   if (VIEW_COMMANDS.has(cmd.type)) {
     const view = applyViewCommand(ctx, state.view, cmd as ViewCommand);
@@ -159,9 +185,13 @@ export function apply(state: AppState, cmd: AppCommand, ctx: CommandContext): Ap
 
     case 'Refresh': {
       const next = stateFromLoaded(cmd.loaded, cmd.loss);
-      // Refresh keeps the user's layout AND what they were looking at.
+      // Refresh keeps the user's layout AND what they were looking at — including
+      // the selection, restricted to ids that still exist. Under follow-file
+      // auto-reload the extractor rewrites every few seconds; resetting the
+      // selection each time would clear the entity the user is inspecting.
       return {
         ...next,
+        selection: carrySelection(state, next),
         search:
           state.search.query === ''
             ? next.search

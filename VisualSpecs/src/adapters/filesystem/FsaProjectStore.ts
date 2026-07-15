@@ -1,5 +1,6 @@
 import type {
   CommitCurrentInput,
+  FollowOptions,
   CreateProjectInput,
   ExportPortableInput,
   ExportResult,
@@ -237,17 +238,8 @@ export class FsaProjectStore implements ProjectStore {
       excludeAcceptAllOption: false,
     });
     if (handle === undefined) throw new Error('No file was selected.');
-    const file = await handle.getFile();
-    return {
-      sourceName: file.name,
-      sizeBytes: file.size,
-      readText: async (maxBytes: number) => {
-        if (file.size > maxBytes) {
-          throw new Error(`${file.name} is ${file.size} bytes, over the ${maxBytes} byte cap.`);
-        }
-        return file.text();
-      },
-    };
+    const first = await handle.getFile();
+    return makePickedSource(handle, first.name, first.size);
   }
 
   async writeImport(ref: ProjectRef, suggestedName: string, text: string): Promise<StoredDocRef> {
@@ -358,6 +350,230 @@ export class FsaProjectStore implements ProjectStore {
     this.queues.set(projectId, next.catch(() => undefined));
     return next;
   }
+}
+
+// ── Follow-file: retained-handle sources and the poll loop ───────────────────
+//
+// The loop is factored over a minimal handle surface so unit tests can script
+// failure modes (NotAllowedError, slow reads, backwards mtime) that OPFS cannot
+// fabricate. The real caller passes the FileSystemFileHandle itself.
+
+export interface FollowableFileLike {
+  readonly name: string;
+  readonly size: number;
+  readonly lastModified: number;
+  text(): Promise<string>;
+}
+
+export interface FollowableHandleLike {
+  getFile(): Promise<FollowableFileLike>;
+  queryPermission?(descriptor?: { mode?: 'read' | 'readwrite' }): Promise<PermissionState>;
+}
+
+export interface FollowBaseline {
+  /** null when the content was never read (oversized advance) — always deliver next. */
+  contentHash: string | null;
+  lastModified: number;
+  size: number;
+}
+
+/** SHA-256, hex — the pinned dedupe identity. Requires a secure context. */
+export async function sha256HexText(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  let out = '';
+  for (const byte of new Uint8Array(digest)) out += byte.toString(16).padStart(2, '0');
+  return out;
+}
+
+function canHashContent(): boolean {
+  return typeof crypto !== 'undefined' && crypto.subtle !== undefined;
+}
+
+function isNotAllowed(err: unknown): boolean {
+  return err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+}
+
+const FOLLOW_INTERVAL_MS = 1000;
+const FOLLOW_MAX_TRANSIENT_FAILURES = 5;
+
+/**
+ * The poll loop. Single-flight by construction: the next tick is scheduled only
+ * after the current one fully settles, so reads can never race or deliver out of
+ * order. The metadata gate is strict inequality — a backwards mtime is a change.
+ * Pauses while the document is hidden; an immediate check runs on return.
+ */
+export function startFollowLoop(
+  handle: FollowableHandleLike,
+  sourceName: string,
+  initialBaseline: FollowBaseline,
+  options: FollowOptions,
+  intervalMs: number = FOLLOW_INTERVAL_MS,
+): () => void {
+  let baseline = initialBaseline;
+  let stopped = false;
+  let paused = false;
+  let transientFailures = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const hasDocument = typeof document !== 'undefined';
+  const isHidden = (): boolean => hasDocument && document.visibilityState === 'hidden';
+  const onVisibility = (): void => {
+    if (!stopped && paused && !isHidden()) {
+      paused = false;
+      void tick();
+    }
+  };
+  if (hasDocument) document.addEventListener('visibilitychange', onVisibility);
+
+  const stop = (): void => {
+    stopped = true;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    if (hasDocument) document.removeEventListener('visibilitychange', onVisibility);
+  };
+
+  const schedule = (): void => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void tick();
+    }, intervalMs);
+  };
+
+  const end = (reason: string): void => {
+    stop();
+    options.onEnded(reason);
+  };
+
+  async function classifyFailure(err: unknown): Promise<string | null> {
+    if (!isNotAllowed(err)) return null;
+    // Confirm permanence: some builds report a replace-window collision as
+    // NotAllowedError. Only a non-granted permission answer ends the follow;
+    // an unavailable or throwing query falls back to the transient budget.
+    if (handle.queryPermission === undefined) return null;
+    let permission: PermissionState;
+    try {
+      permission = await handle.queryPermission({ mode: 'read' });
+    } catch {
+      return null;
+    }
+    if (permission === 'granted') return null;
+    return `read permission is no longer granted (${permission})`;
+  }
+
+  async function tick(): Promise<void> {
+    if (stopped) return;
+    if (isHidden()) {
+      paused = true;
+      return;
+    }
+    try {
+      const file = await handle.getFile();
+      if (stopped) return;
+      if (file.lastModified !== baseline.lastModified || file.size !== baseline.size) {
+        if (file.size > options.maxBytes) {
+          // Size gate on metadata BEFORE any content read; the baseline advances
+          // on metadata so the same oversized bytes warn exactly once.
+          baseline = { contentHash: null, lastModified: file.lastModified, size: file.size };
+          options.onSkipped(`${sourceName} is ${file.size} bytes, over the ${options.maxBytes} byte cap`);
+        } else {
+          const text = await file.text();
+          if (stopped) return;
+          const contentHash = await sha256HexText(text);
+          if (stopped) return;
+          const changed = contentHash !== baseline.contentHash;
+          baseline = { contentHash, lastModified: file.lastModified, size: file.size };
+          if (changed) options.onChange({ text, modifiedAt: file.lastModified });
+        }
+      }
+      transientFailures = 0;
+    } catch (err) {
+      if (stopped) return;
+      const endedReason = await classifyFailure(err);
+      if (stopped) return;
+      if (endedReason !== null) {
+        end(endedReason);
+        return;
+      }
+      transientFailures += 1;
+      if (transientFailures >= FOLLOW_MAX_TRANSIENT_FAILURES) {
+        end(
+          transientFailures +
+            ' consecutive read failures (' +
+            (err instanceof Error ? err.message : String(err)) +
+            ')',
+        );
+        return;
+      }
+    }
+    schedule();
+  }
+
+  schedule();
+  return stop;
+}
+
+/**
+ * A picked source over a retained handle. `readText` re-reads fresh bytes on
+ * every call and records `(contentHash, lastModified, size)` for a future
+ * `follow()`. `follow` is present only when content hashing is available
+ * (secure contexts) — the same honest absence as the input-element fallback.
+ */
+export function makePickedSource(
+  handle: FollowableHandleLike,
+  sourceName: string,
+  sizeBytes: number,
+): PickedTextSource {
+  const followable = canHashContent();
+  let lastRead: FollowBaseline | null = null;
+  let followActive = false;
+
+  const source: PickedTextSource = {
+    sourceName,
+    sizeBytes,
+    readText: async (maxBytes: number): Promise<string> => {
+      const file = await handle.getFile();
+      if (file.size > maxBytes) {
+        throw new Error(`${file.name} is ${file.size} bytes, over the ${maxBytes} byte cap.`);
+      }
+      const text = await file.text();
+      if (followable) {
+        lastRead = {
+          contentHash: await sha256HexText(text),
+          lastModified: file.lastModified,
+          size: file.size,
+        };
+      }
+      return text;
+    },
+  };
+
+  if (followable) {
+    source.follow = (options: FollowOptions): (() => void) => {
+      if (lastRead === null) {
+        throw new Error('follow requires a completed readText first; there is no shown content to follow.');
+      }
+      if (followActive) throw new Error('A follow is already active for this source.');
+      followActive = true;
+      // The loop owns its baseline from here; later readText calls only
+      // re-record lastRead for a future follow (N2).
+      const stopLoop = startFollowLoop(handle, sourceName, lastRead, {
+        maxBytes: options.maxBytes,
+        onChange: options.onChange,
+        onSkipped: options.onSkipped,
+        onEnded: (reason) => {
+          followActive = false;
+          options.onEnded(reason);
+        },
+      });
+      return (): void => {
+        followActive = false;
+        stopLoop();
+      };
+    };
+  }
+
+  return source;
 }
 
 async function readFileText(handle: FileSystemFileHandle, maxBytes: number): Promise<string> {

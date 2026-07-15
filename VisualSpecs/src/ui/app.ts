@@ -111,6 +111,7 @@ export function deriveProjectPresentation(state: ProjectControllerState): Projec
     if (state.pendingAutosave) statuses.push('Recovery available');
     if (state.corruptAutosaveIgnored) statuses.push('Corrupt autosave ignored');
   }
+  if (state.followState.kind !== 'none') statuses.push(state.followState.label);
   if (state.lifecycleBusy) statuses.push('Project operation in progress');
 
   const criticalAction: ProjectCriticalAction = state.canReturnToProject
@@ -569,6 +570,21 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       void runProjectAction('Return to project', () => projectController.returnToProject());
     },
     openTemporary(): void {
+      if (currentProjectState.canPickTemporaryJson) {
+        // Pinned order: picker FIRST on the click's fresh activation; the
+        // discard confirm AFTER a file was actually picked and BEFORE
+        // installing it. Confirm-first let a slow answer expire the transient
+        // activation and made showOpenFilePicker throw SecurityError.
+        void runProjectAction('Open temporary JSON', async () => {
+          const source = await projectController.pickTemporaryJson();
+          if (!confirmDestructive('open a temporary JSON document')) {
+            setStatus('Cancelled. No project or document state changed.');
+            return;
+          }
+          await projectController.openTemporarySource(source);
+        });
+        return;
+      }
       if (!confirmDestructive('open a temporary JSON document')) return;
       fileInput.click();
     },
@@ -846,6 +862,11 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
   /** So that "Selection cleared." is announced on a real clear, and never on a load
    *  where there was nothing selected in the first place. */
   let hadSelection = false;
+  /** A selection emptied BY a refresh is announced by the reload announcement
+   *  (cause, not symptom); the bare "Selection cleared." is suppressed then. */
+  let lastLoss: AppState['loss'] = null;
+  /** Each live-region announcement from the project controller is spoken once. */
+  let announcedSeq = 0;
 
   function setStatus(message: string): void {
     clear(statusHost);
@@ -1167,7 +1188,11 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       const l = state.loss;
       bannerHost.appendChild(
         el('div', { class: 'banner info' }, [
-          el('strong', {}, ['Refreshed. ']),
+          el('strong', {}, [
+            currentProjectState.followState.kind !== 'none' && currentProjectState.lastReloadAt !== null
+              ? `Refreshed at ${currentProjectState.lastReloadAt}. `
+              : 'Refreshed. ',
+          ]),
           el('span', {}, [
             `${l.newNodes.length} new node(s); dropped ${l.droppedPositions.length} position(s) and ` +
               `${l.droppedExpanded.length} expanded id(s) that no longer exist; ${l.reparented.length} reparented.`,
@@ -1341,10 +1366,12 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
    * where nothing was ever selected and there is nothing to clear.
    */
   function announce(state: AppState, derived: Derived): void {
+    const lossChanged = state.loss !== lastLoss;
+    lastLoss = state.loss;
     const edgeId = state.selection.edgeId;
     const hasSelection = edgeId !== null || state.selection.nodeIds.length > 0;
     if (!hasSelection) {
-      if (hadSelection) setStatus('Selection cleared.');
+      if (hadSelection && !lossChanged) setStatus('Selection cleared.');
       hadSelection = false;
       return;
     }
@@ -1457,6 +1484,11 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       previousManifestId !== undefined &&
       project.manifestProjectId !== previousManifestId;
     currentProjectState = project;
+
+    if (project.announcement !== null && project.announcement.seq !== announcedSeq) {
+      announcedSeq = project.announcement.seq;
+      setStatus(project.announcement.text);
+    }
 
     const nameNeedsSync =
       project.projectKey !== renderedProjectKey ||
@@ -1593,7 +1625,11 @@ export function mountUi(root: HTMLElement, controller: Controller, projectContro
       patchStoredSelect(exportSelect, project.exports, 'No export copies');
     }
 
-    projectMessage.textContent = project.persistenceLabel + ' ' + project.message;
+    projectMessage.textContent =
+      (project.followState.kind !== 'none' ? project.followState.label + ' \u00b7 ' : '') +
+      project.persistenceLabel +
+      ' ' +
+      project.message;
     applyLayout();
     if (committedDifferentProject) {
       scheduleFocus(() => (projectRail.hidden ? null : projectCollapse));

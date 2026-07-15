@@ -64,6 +64,24 @@ export interface ProjectControllerState {
   pendingAutosave: boolean;
   imports: readonly StoredDocRef[];
   exports: readonly StoredDocRef[];
+  /** Follow-file status. `stopped` persists until the session ends. */
+  followState: FollowState;
+  /** Wall-clock label of the last auto-reload, for the banner. */
+  lastReloadAt: string | null;
+  /** The FSA picker path for temporary open is available. */
+  canPickTemporaryJson: boolean;
+  /** Latest live-region announcement; the UI announces each seq exactly once. */
+  announcement: FollowAnnouncement | null;
+}
+
+export type FollowState =
+  | { kind: 'none' }
+  | { kind: 'following'; label: string }
+  | { kind: 'stopped'; label: string };
+
+export interface FollowAnnouncement {
+  seq: number;
+  text: string;
 }
 
 export class ProjectConflictError extends Error {
@@ -134,6 +152,17 @@ export class ProjectController {
   private sessionEpoch = 0;
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   private lastViewKey = '';
+  private stopFollow: (() => void) | null = null;
+  private followedSourceName: string | null = null;
+  private followStateValue: FollowState = { kind: 'none' };
+  private lastReloadAtValue: string | null = null;
+  private pendingFollow: {
+    reloadText: string | null;
+    skippedReason: string | null;
+    endedReason: string | null;
+  } | null = null;
+  private announcementValue: FollowAnnouncement | null = null;
+  private announcementSeq = 0;
 
   constructor(
     controller: Controller,
@@ -229,6 +258,10 @@ export class ProjectController {
       pendingAutosave: this.project?.pendingAutosave !== undefined,
       imports: this.project?.imports ?? [],
       exports: this.project?.exports ?? [],
+      followState: this.followStateValue,
+      lastReloadAt: this.lastReloadAtValue,
+      canPickTemporaryJson: available && caps.canOpenTemporaryJson,
+      announcement: this.announcementValue,
     };
   }
 
@@ -589,6 +622,16 @@ export class ProjectController {
   }
 
   /**
+   * Picker passthrough for the UI's pinned open order: the picker runs FIRST on
+   * the click's fresh user activation, the discard confirm runs after a file was
+   * actually picked, and the install goes through openTemporarySource, which
+   * owns the epoch fence. A confirm-cancel simply drops the returned source.
+   */
+  async pickTemporaryJson(): Promise<PickedTextSource> {
+    return this.store.pickExternalJson();
+  }
+
+  /**
    * Browser-input counterpart to openTemporaryPicked(). The native input picker is
    * activated synchronously by the UI; once it yields a File, this method owns the
    * bounded asynchronous read under the same epoch/session fence as every other load.
@@ -804,6 +847,7 @@ export class ProjectController {
         source.sourceName,
         'Opened ' + source.sourceName + ' temporarily. This did not write .visual-specs.',
       );
+      this.startFollowing(source);
     }
   }
 
@@ -875,6 +919,7 @@ export class ProjectController {
   }
 
   private commitProjectCandidate(candidate: ProjectCandidate): void {
+    this.stopFollowing();
     this.installLoadedSession(candidate.loaded, () => {
       this.cancelAutosave();
       this.previewReturn = null;
@@ -889,6 +934,7 @@ export class ProjectController {
   }
 
   private beginProjectPreview(loaded: LoadedDoc, message: string): void {
+    this.stopFollowing();
     const returning =
       this.previewReturn ?? { view: cloneView(this.controller.state.view), dirty: this.dirty };
     this.installLoadedSession(loaded, () => {
@@ -902,6 +948,7 @@ export class ProjectController {
   }
 
   private loadTemporaryLoaded(loaded: LoadedDoc, displayLabel: string, message: string): void {
+    this.stopFollowing();
     this.invalidateOperations();
     this.installLoadedSession(loaded, () => {
       this.cancelAutosave();
@@ -914,6 +961,159 @@ export class ProjectController {
       this.corruptAutosaveIgnored = false;
       this.message = message;
     });
+  }
+
+  // ── Follow-file lifecycle ──────────────────────────────────────────────────
+
+  private startFollowing(source: PickedTextSource): void {
+    this.stopFollowing();
+    if (source.follow === undefined) return;
+    const epoch = this.sessionEpoch;
+    const name = source.sourceName;
+    this.stopFollow = source.follow({
+      maxBytes: this.limits.maxBytes,
+      onChange: (read) => this.onFollowChange(epoch, name, read.text),
+      onSkipped: (reason) => this.onFollowSkipped(epoch, reason),
+      onEnded: (reason) => this.onFollowEnded(epoch, name, reason),
+    });
+    this.followedSourceName = name;
+    this.followStateValue = { kind: 'following', label: `Following ${name} — reloads on change` };
+  }
+
+  private stopFollowing(): void {
+    if (this.stopFollow !== null) {
+      this.stopFollow();
+      this.stopFollow = null;
+    }
+    this.pendingFollow = null;
+    this.followedSourceName = null;
+    this.followStateValue = { kind: 'none' };
+    this.lastReloadAtValue = null;
+  }
+
+  /** The epoch fence: a follow event may act only on the session it was started for. */
+  private followSessionIsCurrent(epoch: number): boolean {
+    return epoch === this.sessionEpoch && this.project === null && this.previewReturn === null;
+  }
+
+  private parkedFollow(): NonNullable<ProjectController['pendingFollow']> {
+    this.pendingFollow ??= { reloadText: null, skippedReason: null, endedReason: null };
+    return this.pendingFollow;
+  }
+
+  private onFollowChange(epoch: number, name: string, text: string): void {
+    if (!this.followSessionIsCurrent(epoch)) return;
+    if (this.followStateValue.kind !== 'following') return;
+    if (this.lifecycleBusy) {
+      const pending = this.parkedFollow();
+      pending.reloadText = text;
+      // Event-sequence rule: a reload parked AFTER a skipped discards the stale
+      // pause notice — "the next successful reload clears it", inside the slot.
+      pending.skippedReason = null;
+      return;
+    }
+    this.applyFollowReload(name, text);
+  }
+
+  private onFollowSkipped(epoch: number, reason: string): void {
+    if (!this.followSessionIsCurrent(epoch)) return;
+    if (this.followStateValue.kind !== 'following') return;
+    if (this.lifecycleBusy) {
+      this.parkedFollow().skippedReason = reason;
+      return;
+    }
+    this.applyFollowSkipped(reason);
+  }
+
+  private onFollowEnded(epoch: number, name: string, reason: string): void {
+    if (!this.followSessionIsCurrent(epoch)) return;
+    if (this.followStateValue.kind !== 'following') return;
+    if (this.lifecycleBusy) {
+      this.parkedFollow().endedReason = reason;
+      return;
+    }
+    this.applyFollowEnded(name, reason);
+  }
+
+  private applyFollowReload(name: string, text: string): void {
+    const before = this.controller.state;
+    // The reload install runs under the same `loading` guard as
+    // installLoadedSession: dirty tracks USER actions only, and the reload
+    // itself never schedules an autosave.
+    this.loading = true;
+    try {
+      this.controller.refreshText(text);
+    } catch (err) {
+      this.message =
+        `Auto-reload skipped: ${name} changed on disk but is invalid or mid-write. ` +
+        `Keeping the last good state. (${errorMessage(err)})`;
+      this.announce(this.message);
+      this.notify();
+      return;
+    } finally {
+      this.loading = false;
+      this.lastViewKey = viewKey(this.controller.state.view);
+    }
+    const after = this.controller.state;
+    const droppedNodes = Math.max(
+      0,
+      before.selection.nodeIds.length - after.selection.nodeIds.length,
+    );
+    const droppedEdge = before.selection.edgeId !== null && after.selection.edgeId === null ? 1 : 0;
+    const dropped = droppedNodes + droppedEdge;
+    const time = clockLabel(new Date());
+    const flip =
+      after.readOnly === before.readOnly
+        ? ''
+        : after.readOnly
+          ? ' The reloaded document is read-only: it declares an unsupported requirement.'
+          : ' The reloaded document no longer declares unsupported requirements and is writable again.';
+    this.message = `Reloaded ${name} from disk (${time}).${flip}`;
+    this.lastReloadAtValue = time;
+    this.announce(
+      dropped > 0
+        ? `Reloaded ${name}: ${dropped} selected item(s) no longer exist.`
+        : `Reloaded ${name}.`,
+    );
+    this.notify();
+  }
+
+  private applyFollowSkipped(reason: string): void {
+    this.message = `Auto-reload paused: ${reason}. Reloads resume when the file is back under the cap.`;
+    this.announce(this.message);
+    this.notify();
+  }
+
+  private applyFollowEnded(name: string, reason: string): void {
+    if (this.stopFollow !== null) {
+      this.stopFollow();
+      this.stopFollow = null;
+    }
+    this.pendingFollow = null;
+    this.followStateValue = { kind: 'stopped', label: 'Follow stopped — reopen the file to resume' };
+    this.message =
+      `Stopped following ${name}: ${reason}. The last good state is kept. ` +
+      'Reopen the file to resume following.';
+    this.announce(this.message);
+    this.notify();
+  }
+
+  /** Applied when a foreground operation settles: reload, then surviving skipped, then ended. */
+  private flushPendingFollow(): void {
+    const pending = this.pendingFollow;
+    if (pending === null) return;
+    this.pendingFollow = null;
+    const name = this.followedSourceName;
+    if (name === null || this.followStateValue.kind !== 'following') return;
+    if (this.project !== null || this.previewReturn !== null) return;
+    if (pending.reloadText !== null) this.applyFollowReload(name, pending.reloadText);
+    if (pending.skippedReason !== null) this.applyFollowSkipped(pending.skippedReason);
+    if (pending.endedReason !== null) this.applyFollowEnded(name, pending.endedReason);
+  }
+
+  private announce(text: string): void {
+    this.announcementSeq += 1;
+    this.announcementValue = { seq: this.announcementSeq, text };
   }
 
   private scheduleAutosave(resumeGuard?: OperationGuard): void {
@@ -1121,6 +1321,7 @@ export class ProjectController {
     install();
     this.lifecycleBusy = false;
     this.scheduleAutosave(guard);
+    this.flushPendingFollow();
     this.notify();
     return true;
   }
@@ -1129,6 +1330,7 @@ export class ProjectController {
     if (guard.epoch !== this.operationEpoch || !this.lifecycleBusy) return;
     this.lifecycleBusy = false;
     this.scheduleAutosave(guard);
+    this.flushPendingFollow();
     this.notify();
   }
 
@@ -1247,6 +1449,11 @@ function viewKey(view: ViewState): string {
 
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function clockLabel(date: Date): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`;
 }
 
 function sourceStem(name: string): string {

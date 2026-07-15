@@ -15,8 +15,14 @@ import {
   projectManifestText,
 } from '../../src/contract/projectManifest.ts';
 import { computeDocRevision } from '../../src/contract/revision.ts';
+import {
+  makePickedSource,
+  startFollowLoop,
+  type FollowableHandleLike,
+} from '../../src/adapters/filesystem/FsaProjectStore.ts';
 import type {
   CommitCurrentInput,
+  FollowOptions,
   CreateProjectInput,
   ExportPortableInput,
   ExportResult,
@@ -634,7 +640,7 @@ describe('atomic session lifecycle fencing', () => {
   });
 
   it('does not let an already-started autosave completion mutate a foreground lifecycle', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const store = new DeferredProjectStore();
     const snapshotA = projectSnapshot(store, 'project-a', 'Project A', sampleDoc(), 'readwrite');
     const snapshotB = projectSnapshot(store, 'project-b', 'Project B', changedDoc());
@@ -1101,7 +1107,7 @@ describe('backup and stored-document invariants', () => {
 
 describe('autosave, export and permissions', () => {
   it('re-arms exactly one dirty autosave after Keep current invalidates the pending timer', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const store = new FakeProjectStore();
     const revision = computeDocRevision(store.snapshot.currentText);
     store.snapshot = {
@@ -1130,7 +1136,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('does not re-arm Keep current autosave for clean or read-only sessions', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     const cleanStore = new FakeProjectStore();
     const revision = computeDocRevision(cleanStore.snapshot.currentText);
@@ -1168,7 +1174,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('re-arms dirty autosave after a successful non-session foreground operation', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { controller, project, store } = boot();
     await project.createProject('Fake Project');
     controller.dispatch({ type: 'SetViewport', viewport: { x: 8, y: 9, zoom: 1.3 } });
@@ -1181,7 +1187,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('re-arms dirty autosave after a foreground cancellation or failure preserves the session', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { controller, project, store } = boot();
     await project.createProject('Fake Project');
     controller.dispatch({ type: 'SetViewport', viewport: { x: 10, y: 11, zoom: 1.4 } });
@@ -1197,7 +1203,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('does not emit a spurious autosave after Save or a committed session change', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const first = boot();
     await first.project.createProject('Fake Project');
     first.controller.dispatch({ type: 'SetViewport', viewport: { x: 12, y: 13, zoom: 1.5 } });
@@ -1223,7 +1229,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('does not re-arm autosave after a foreground permission revocation', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { controller, project, store } = boot();
     await project.createProject('Fake Project');
     controller.dispatch({ type: 'SetViewport', viewport: { x: 16, y: 17, zoom: 1.7 } });
@@ -1237,7 +1243,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('does not let a stale foreground completion re-arm autosave in a changed session', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { controller, project, store } = boot();
     await project.createProject('Project A');
     controller.dispatch({ type: 'SetViewport', viewport: { x: 18, y: 19, zoom: 1.8 } });
@@ -1317,7 +1323,7 @@ describe('autosave, export and permissions', () => {
   );
 
   it('keeps the structured corrupt-autosave fact after a failed rewrite', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const store = new FakeProjectStore();
     store.snapshot = { ...store.snapshot, autosaveViewText: '{not json' };
     const { controller, project } = boot(store);
@@ -1379,7 +1385,7 @@ describe('autosave, export and permissions', () => {
   });
 
   it('degrades and stops autosave retry after permission revocation', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const store = new FakeProjectStore();
     const { controller, project } = boot(store);
     await project.createProject('Fake Project');
@@ -1459,6 +1465,686 @@ describe('bounded external input', () => {
   });
 });
 
+
+// ── Follow-file: controller lifecycle over fake followable sources ───────────
+
+interface FollowableFake {
+  source: PickedTextSource;
+  change(text: string): void;
+  skip(reason: string): void;
+  end(reason: string): void;
+  stopCount(): number;
+  followCount(): number;
+}
+
+function makeFollowable(name: string, initialText: string): FollowableFake {
+  let current = initialText;
+  let options: FollowOptions | null = null;
+  let stops = 0;
+  let follows = 0;
+  const source: PickedTextSource = {
+    sourceName: name,
+    sizeBytes: initialText.length,
+    readText: async () => current,
+    follow: (opts: FollowOptions) => {
+      follows += 1;
+      options = opts;
+      return () => {
+        stops += 1;
+        options = null;
+      };
+    },
+  };
+  return {
+    source,
+    change: (text: string) => {
+      current = text;
+      options?.onChange({ text, modifiedAt: Date.now() });
+    },
+    skip: (reason: string) => options?.onSkipped(reason),
+    end: (reason: string) => options?.onEnded(reason),
+    stopCount: () => stops,
+    followCount: () => follows,
+  };
+}
+
+function docWithoutPkgB(): string {
+  const next = JSON.parse(sampleDoc()) as { nodes: { id: string }[]; edges: { targetId: string }[] };
+  next.nodes = next.nodes.filter((n) => !['pkg-b', 'dir-b', 'file-b1'].includes(n.id));
+  next.edges = next.edges.filter((e) => e.targetId !== 'file-b1');
+  return JSON.stringify(next);
+}
+
+describe('follow-file: reload lifecycle', () => {
+  it('a delivered change reloads through refresh: layout kept, loss surfaced, message and announcement set', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+    expect(project.snapshot().followState).toEqual({
+      kind: 'following',
+      label: 'Following dataset.json — reloads on change',
+    });
+
+    controller.dispatch({ type: 'MoveNode', id: 'pkg-a', position: { x: 321, y: 123 } });
+    fake.change(docWithoutPkgB());
+
+    expect(controller.state.model.nodeById.has('pkg-b')).toBe(false);
+    expect(controller.state.view.positions.get('pkg-a')).toEqual({ x: 321, y: 123, pinned: true });
+    expect(controller.state.loss).not.toBeNull();
+    const snap = project.snapshot();
+    expect(snap.message).toMatch(/Reloaded dataset\.json from disk \(\d\d:\d\d:\d\d\)\./u);
+    expect(snap.lastReloadAt).toMatch(/^\d\d:\d\d:\d\d$/u);
+    expect(snap.announcement?.text).toBe('Reloaded dataset.json.');
+    expect(snap.followState.kind).toBe('following');
+  });
+
+  it('invalid content NEVER replaces the last good state: same state object, warning, follow continues', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    const before = controller.state;
+    fake.change('{ this is not json');
+    expect(controller.state).toBe(before);
+    const snap = project.snapshot();
+    expect(snap.message).toMatch(/Auto-reload skipped: dataset\.json changed on disk but is invalid or mid-write/u);
+    expect(snap.followState.kind).toBe('following');
+
+    fake.change(docWithoutPkgB());
+    expect(controller.state).not.toBe(before);
+    expect(project.snapshot().message).toMatch(/Reloaded dataset\.json from disk/u);
+  });
+
+  it('a reload announcement folds dropped selected ids into the cause (A2-P1-1)', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    controller.dispatch({ type: 'Select', nodeIds: ['pkg-b'], edgeId: null });
+    fake.change(docWithoutPkgB());
+
+    expect(controller.state.selection.nodeIds).toEqual([]);
+    expect(project.snapshot().announcement?.text).toBe(
+      'Reloaded dataset.json: 1 selected item(s) no longer exist.',
+    );
+  });
+
+  it('a stale delivery after a NEW temporary session is ignored and the old follow was stopped', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('old.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+    expect(fake.followCount()).toBe(1);
+
+    project.openTemporaryText('new.json', sampleDoc());
+    expect(fake.stopCount()).toBe(1);
+    expect(project.snapshot().followState.kind).toBe('none');
+
+    const before = controller.state;
+    fake.change(docWithoutPkgB());
+    expect(controller.state).toBe(before);
+  });
+
+  it('opening a project stops the follow and a stale delivery cannot touch the project session', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    await project.createProject('Fake Project');
+    expect(fake.stopCount()).toBe(1);
+    expect(project.snapshot().followState.kind).toBe('none');
+
+    const before = controller.state;
+    fake.change(docWithoutPkgB());
+    expect(controller.state).toBe(before);
+  });
+
+  it('fallback source without follow: no follow attempted, followState none', async () => {
+    const { project } = boot();
+    await project.openTemporarySource({
+      sourceName: 'plain.json',
+      sizeBytes: sampleDoc().length,
+      readText: async () => sampleDoc(),
+    });
+    expect(project.snapshot().followState.kind).toBe('none');
+  });
+
+  it('onEnded: persistent stopped state, recovery message, no further reloads (A2-P2-5)', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    fake.end('read permission is no longer granted (denied)');
+    const snap = project.snapshot();
+    expect(snap.followState).toEqual({
+      kind: 'stopped',
+      label: 'Follow stopped — reopen the file to resume',
+    });
+    expect(snap.message).toMatch(
+      /Stopped following dataset\.json: read permission is no longer granted \(denied\)\. The last good state is kept\. Reopen the file to resume following\./u,
+    );
+
+    const before = controller.state;
+    fake.change(docWithoutPkgB());
+    expect(controller.state).toBe(before);
+    expect(project.snapshot().followState.kind).toBe('stopped');
+  });
+
+  it('oversized warning framing is distinct from invalid/mid-write (A2-P2-3)', async () => {
+    const { project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    fake.skip('dataset.json is 999 bytes, over the 10 byte cap');
+    const snap = project.snapshot();
+    expect(snap.message).toBe(
+      'Auto-reload paused: dataset.json is 999 bytes, over the 10 byte cap. Reloads resume when the file is back under the cap.',
+    );
+    expect(snap.followState.kind).toBe('following');
+    expect(snap.message).not.toMatch(/invalid or mid-write/u);
+  });
+
+  it('reload flips readOnly → the message names the flip (A2-F8)', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+    expect(controller.state.readOnly).toBe(false);
+
+    fake.change(readOnlyDoc());
+    expect(controller.state.readOnly).toBe(true);
+    expect(project.snapshot().message).toMatch(
+      /Reloaded dataset\.json from disk \(\d\d:\d\d:\d\d\)\. The reloaded document is read-only: it declares an unsupported requirement\./u,
+    );
+
+    fake.change(sampleDoc());
+    expect(controller.state.readOnly).toBe(false);
+    expect(project.snapshot().message).toMatch(/writable again\./u);
+  });
+});
+
+describe('follow-file: dirty semantics (A2-F3)', () => {
+  it('a reload with drops on a CLEAN session leaves dirty false and schedules no autosave', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+    expect(project.snapshot().dirty).toBe(false);
+
+    controller.dispatch({ type: 'Select', nodeIds: [], edgeId: null });
+    fake.change(docWithoutPkgB());
+
+    expect(project.snapshot().dirty).toBe(false);
+    await vi.waitFor(() => expect(store.autosaveWrites).toBe(0));
+  });
+
+  it('a reload on a DIRTY session leaves dirty true', async () => {
+    const { controller, project } = boot();
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    controller.dispatch({ type: 'MoveNode', id: 'pkg-a', position: { x: 5, y: 6 } });
+    expect(project.snapshot().dirty).toBe(true);
+
+    fake.change(docWithoutPkgB());
+    expect(project.snapshot().dirty).toBe(true);
+  });
+});
+
+describe('follow-file: busy overlap and the pending slot', () => {
+  function gatedExport(store: FakeProjectStore): { release(): void } {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = store.exportPortable.bind(store);
+    store.exportPortable = async (input) => {
+      await gate;
+      return original(input);
+    };
+    return { release };
+  }
+
+  it('deliveries during lifecycleBusy apply exactly once after settle; superseded text never applies', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    const gate = gatedExport(store);
+    const running = project.exportJson();
+    expect(project.snapshot().lifecycleBusy).toBe(true);
+
+    const before = controller.state;
+    fake.change(docWithoutPkgB());
+    fake.change(sampleDoc());
+    expect(controller.state).toBe(before);
+
+    gate.release();
+    await running;
+
+    // Only the LATEST parked text applied: pkg-b is present again.
+    expect(controller.state).not.toBe(before);
+    expect(controller.state.model.nodeById.has('pkg-b')).toBe(true);
+    expect(project.snapshot().message).toMatch(/Reloaded dataset\.json from disk/u);
+  });
+
+  it('ended during busy: parked reload applies FIRST, then the persistent stopped state (A2-F5/N1)', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    const gate = gatedExport(store);
+    const running = project.exportJson();
+
+    fake.change(docWithoutPkgB());
+    fake.end('file is gone');
+
+    gate.release();
+    await running;
+
+    expect(controller.state.model.nodeById.has('pkg-b')).toBe(false);
+    const snap = project.snapshot();
+    expect(snap.followState.kind).toBe('stopped');
+    expect(snap.message).toMatch(/Stopped following dataset\.json: file is gone/u);
+  });
+
+  it('skipped-then-reload in one busy window: only the reload applies, the stale pause notice is discarded', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    const gate = gatedExport(store);
+    const running = project.exportJson();
+
+    fake.skip('dataset.json is 999 bytes, over the 10 byte cap');
+    fake.change(docWithoutPkgB());
+
+    gate.release();
+    await running;
+
+    expect(controller.state.model.nodeById.has('pkg-b')).toBe(false);
+    const snap = project.snapshot();
+    expect(snap.message).toMatch(/Reloaded dataset\.json from disk/u);
+    expect(snap.message).not.toMatch(/Auto-reload paused/u);
+  });
+
+  it('reload-then-skipped: both apply, pause notice on top', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    const gate = gatedExport(store);
+    const running = project.exportJson();
+
+    fake.change(docWithoutPkgB());
+    fake.skip('dataset.json is 999 bytes, over the 10 byte cap');
+
+    gate.release();
+    await running;
+
+    expect(controller.state.model.nodeById.has('pkg-b')).toBe(false);
+    const snap = project.snapshot();
+    expect(snap.lastReloadAt).not.toBeNull();
+    expect(snap.message).toMatch(/^Auto-reload paused: dataset\.json is 999 bytes/u);
+    expect(snap.followState.kind).toBe('following');
+  });
+
+  it('a lone skipped during busy parks, applies after settle, and touches nothing else', async () => {
+    const store = new FakeProjectStore();
+    const { controller, project } = boot(store);
+    const fake = makeFollowable('dataset.json', sampleDoc());
+    await project.openTemporarySource(fake.source);
+
+    const gate = gatedExport(store);
+    const running = project.exportJson();
+
+    const before = controller.state;
+    fake.skip('dataset.json is 999 bytes, over the 10 byte cap');
+    expect(project.snapshot().message).not.toMatch(/Auto-reload paused/u);
+
+    gate.release();
+    await running;
+
+    expect(controller.state).toBe(before);
+    const snap = project.snapshot();
+    expect(snap.message).toMatch(/^Auto-reload paused/u);
+    expect(snap.followState.kind).toBe('following');
+    expect(snap.dirty).toBe(false);
+  });
+});
+
+// ── Follow-file: the adapter loop over a scripted minimal handle ─────────────
+
+interface ScriptedFile {
+  name: string;
+  size: number;
+  lastModified: number;
+  text: () => Promise<string>;
+}
+
+function scriptedHandle(initial: ScriptedFile): FollowableHandleLike & {
+  set(file: Partial<ScriptedFile>): void;
+  fail(err: unknown, times?: number): void;
+  getFileCalls(): number;
+  textReads(): number;
+  setPermission(state: PermissionState | 'unavailable' | 'throws'): void;
+} {
+  let file = { ...initial };
+  let failWith: unknown = null;
+  let failTimes = 0;
+  let getFileCalls = 0;
+  let textReads = 0;
+  let permission: PermissionState | 'unavailable' | 'throws' = 'granted';
+
+  const handle: FollowableHandleLike & Record<string, unknown> = {
+    async getFile() {
+      getFileCalls += 1;
+      if (failTimes > 0) {
+        failTimes -= 1;
+        throw failWith;
+      }
+      const snapshot = { ...file };
+      return {
+        name: snapshot.name,
+        size: snapshot.size,
+        lastModified: snapshot.lastModified,
+        text: async () => {
+          textReads += 1;
+          return snapshot.text();
+        },
+      };
+    },
+    queryPermission: async () => {
+      if (permission === 'unavailable') throw new Error('should not be called');
+      if (permission === 'throws') throw new Error('query failed');
+      return permission;
+    },
+  };
+
+  return Object.assign(handle, {
+    set(next: Partial<ScriptedFile>) {
+      file = { ...file, ...next };
+    },
+    fail(err: unknown, times = 1) {
+      failWith = err;
+      failTimes = times;
+    },
+    getFileCalls: () => getFileCalls,
+    textReads: () => textReads,
+    setPermission(state: PermissionState | 'unavailable' | 'throws') {
+      if (state === 'unavailable') {
+        delete handle['queryPermission'];
+        permission = 'unavailable';
+        return;
+      }
+      permission = state;
+    },
+  }) as never;
+}
+
+function fileOf(name: string, text: string, lastModified: number): ScriptedFile {
+  return { name, size: text.length, lastModified, text: async () => text };
+}
+
+function collectEvents() {
+  const events: string[] = [];
+  const options = (maxBytes: number): FollowOptions => ({
+    maxBytes,
+    onChange: (read) => events.push('change:' + read.text),
+    onSkipped: (reason) => events.push('skipped:' + reason),
+    onEnded: (reason) => events.push('ended:' + reason),
+  });
+  return { events, options };
+}
+
+/** Real yields so native crypto promises resolve between fake-timer steps. */
+async function flushAsync(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function settle(ms: number): Promise<void> {
+  await flushAsync();
+  let remaining = ms;
+  while (remaining > 0) {
+    const step = Math.min(1000, remaining);
+    await vi.advanceTimersByTimeAsync(step);
+    await flushAsync();
+    remaining -= step;
+  }
+}
+
+describe('follow-file: adapter poll loop (scripted handle)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('baseline gap (A2-F1): a write between the open read and follow() is delivered at the first tick', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+
+    handle.set({ size: 3, lastModified: 2000, text: async () => 'two' });
+
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+    await settle(1000);
+    expect(events).toEqual(['change:two']);
+    stop?.();
+  });
+
+  it('follow before any completed readText throws; a second follow throws; follow after stop works', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    const { options } = collectEvents();
+
+    expect(() => source.follow?.(options(1024))).toThrow(/requires a completed readText/u);
+
+    await source.readText(1024);
+    const stop = source.follow?.(options(1024));
+    expect(() => source.follow?.(options(1024))).toThrow(/already active/u);
+    stop?.();
+    const stopAgain = source.follow?.(options(1024));
+    expect(stopAgain).toBeTypeOf('function');
+    stopAgain?.();
+  });
+
+  it('metadata-only churn advances the baseline silently: no delivery for identical content', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+
+    handle.set({ lastModified: 2000 }); // touch: same bytes
+    await settle(1000);
+    expect(events).toEqual([]);
+
+    handle.set({ lastModified: 3000, size: 3, text: async () => 'two' });
+    await settle(1000);
+    expect(events).toEqual(['change:two']);
+    stop?.();
+  });
+
+  it('strict gate (A2-P2-2): a same-size BACKWARDS mtime change is delivered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 5000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+
+    handle.set({ lastModified: 1000, size: 3, text: async () => 'two' });
+    await settle(1000);
+    expect(events).toEqual(['change:two']);
+    stop?.();
+  });
+
+  it('single-flight (A2-P2-1): a slow read spans ticks without racing and deliveries stay ordered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+
+    let releaseSlow: (v: string) => void = () => undefined;
+    const slow = new Promise<string>((resolve) => {
+      releaseSlow = resolve;
+    });
+    handle.set({ lastModified: 2000, size: 4, text: () => slow });
+
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+
+    await settle(1000); // tick 1 starts the slow read
+    const callsDuringRead = handle.getFileCalls();
+    await settle(2500); // several intervals pass while the read is in flight
+    expect(handle.getFileCalls()).toBe(callsDuringRead); // no overlapping tick
+
+    handle.set({ lastModified: 3000, size: 5, text: async () => 'newer' });
+    releaseSlow('slow1');
+    await settle(1000);
+
+    expect(events[0]).toBe('change:slow1');
+    expect(events[1]).toBe('change:newer');
+    stop?.();
+  });
+
+  it('oversized (A2-F2): metadata gate before any read, exactly one onSkipped, recovery delivers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(10));
+
+    const readsBefore = handle.textReads();
+    handle.set({ lastModified: 2000, size: 999, text: async () => 'x'.repeat(999) });
+    await settle(1000);
+    expect(events).toEqual(['skipped:d.json is 999 bytes, over the 10 byte cap']);
+    expect(handle.textReads()).toBe(readsBefore); // never read the oversized content
+
+    await settle(3000); // same oversized bytes: no repeat warning at tick rate
+    expect(events).toHaveLength(1);
+
+    handle.set({ lastModified: 3000, size: 3, text: async () => 'two' });
+    await settle(1000);
+    expect(events).toEqual([
+      'skipped:d.json is 999 bytes, over the 10 byte cap',
+      'change:two',
+    ]);
+    stop?.();
+  });
+
+  it('NotAllowedError with still-granted permission counts as transient; denied ends (round-1 amendment)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+
+    handle.setPermission('granted');
+    handle.fail(new DOMException('blocked', 'NotAllowedError'), 1);
+    await settle(1000);
+    expect(events).toEqual([]); // survived: misclassified transient
+
+    handle.setPermission('denied');
+    handle.fail(new DOMException('blocked', 'NotAllowedError'), 1);
+    await settle(1000);
+    expect(events).toEqual(['ended:read permission is no longer granted (denied)']);
+    stop?.();
+  });
+
+  it('a prompt answer also ends (re-prompting without a gesture is forbidden)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    source.follow?.(options(1024));
+
+    handle.setPermission('prompt');
+    handle.fail(new DOMException('blocked', 'NotAllowedError'), 1);
+    await settle(1000);
+    expect(events).toEqual(['ended:read permission is no longer granted (prompt)']);
+  });
+
+  it('five consecutive transient failures end the follow; a success resets the counter', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    source.follow?.(options(1024));
+
+    handle.fail(new DOMException('gone', 'NotFoundError'), 4);
+    await settle(4000);
+    expect(events).toEqual([]);
+    await settle(1000); // success resets the counter
+    handle.fail(new DOMException('gone', 'NotFoundError'), 4);
+    await settle(4000);
+    expect(events).toEqual([]);
+
+    handle.fail(new DOMException('gone', 'NotFoundError'), 5);
+    await settle(5000);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatch(/^ended:5 consecutive read failures/u);
+  });
+
+  it('stop is idempotent and no callback fires after stop returns', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+
+    stop?.();
+    stop?.();
+    handle.set({ lastModified: 9000, size: 5, text: async () => 'later' });
+    await settle(5000);
+    expect(events).toEqual([]);
+  });
+
+  it('a readText completed mid-follow never advances the active baseline (N2)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const source = makePickedSource(handle, 'd.json', 3);
+    await source.readText(1024);
+    const { events, options } = collectEvents();
+    const stop = source.follow?.(options(1024));
+
+    // Content changes; a concurrent readText observes it BEFORE the next tick.
+    handle.set({ lastModified: 2000, size: 3, text: async () => 'two' });
+    await source.readText(1024);
+
+    // The active loop still delivers: its baseline was NOT advanced by readText.
+    await settle(1000);
+    expect(events).toEqual(['change:two']);
+    stop?.();
+  });
+
+  it('startFollowLoop over a raw baseline: null contentHash (oversized advance) always delivers next', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const handle = scriptedHandle(fileOf('d.json', 'one', 1000));
+    const { events, options } = collectEvents();
+    const stop = startFollowLoop(
+      handle,
+      'd.json',
+      { contentHash: null, lastModified: 500, size: 1 },
+      options(1024),
+    );
+    await settle(1000);
+    expect(events).toEqual(['change:one']);
+    stop();
+  });
+});
+
 function stateForPresentation(
   overrides: Partial<ProjectControllerState> = {},
 ): ProjectControllerState {
@@ -1494,6 +2180,10 @@ function stateForPresentation(
     pendingAutosave: false,
     imports: [],
     exports: [],
+    followState: { kind: 'none' },
+    lastReloadAt: null,
+    canPickTemporaryJson: false,
+    announcement: null,
     ...overrides,
   };
 }
