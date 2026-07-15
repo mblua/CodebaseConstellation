@@ -60,22 +60,35 @@ export interface FollowedRead {
 }
 
 export interface FollowOptions {
-  /** Bound for each fresh read; larger content is an error, not a delivery. */
+  /** Bound for each delivery; content over the bound is skipped, never truncated. */
   maxBytes: number;
   /** Fresh content after each detected change. Never called with unchanged text. */
   onChange(read: FollowedRead): void;
+  /**
+   * A changed file could not be delivered (e.g. over maxBytes). The baseline
+   * advances and following continues: at most ONE onSkipped per content change,
+   * never a repeat for the same bytes. (premortem A2-F2)
+   */
+  onSkipped(reason: string): void;
   /** Following stopped permanently (permission revoked, file gone, repeated failures). */
   onEnded(reason: string): void;
 }
 
 export interface PickedTextSource {
   sourceName: string;
+  /** Size AT PICK TIME. readText re-checks the fresh size against its own bound;
+   *  callers pre-checking this value may spuriously reject a file that shrank -
+   *  accepted, the fresh check governs. (premortem A2-F7) */
   sizeBytes: number;
   readText(maxBytes: number): Promise<string>;
   /**
    * Present only when the source can be re-read without re-prompting.
-   * Starts change detection; returns a stop function. At most one active
-   * follow per source. Absent on snapshot-only sources (input-element fallback).
+   * Starts change detection; returns an idempotent stop function.
+   * Contract (premortem A2-F1/A2-F6): requires at least one completed
+   * readText first (throws otherwise - the baseline is the last completed
+   * read); a second call while one follow is active throws; calling again
+   * after stop() is allowed. Absent on snapshot-only sources
+   * (input-element fallback).
    */
   follow?(options: FollowOptions): () => void;
 }
@@ -91,13 +104,13 @@ The app learns "this source can be followed" from the presence of `follow`, noth
 - `follow(options)` starts a polling loop owned entirely by the adapter (timers stay out of `app/` for this feature, per the standing decoupling directive):
   - **Tick**: every 1000 ms, `handle.getFile()` and compare `lastModified` + `size` against the last delivered baseline. Unchanged metadata → done; the tick costs one metadata promise, no read, no allocation beyond the `File` object.
   - **Change candidate**: bounded text read; if the text equals the last delivered text (metadata-only churn, e.g. touch), update the baseline silently; otherwise deliver `onChange({ text, modifiedAt })` and advance the baseline.
-  - **Baseline**: initialized from the open-time read, so `follow` never re-delivers the content the session already shows.
+  - **Baseline (premortem A2-F1, mechanism pinned)**: the source closure records `(text, lastModified, size)` of EVERY completed `readText`; `follow()` adopts the LAST completed read as its baseline - never a fresh `getFile()` at follow time. A write landing in the open-to-follow window (import + build + render of a large document; exactly when the `--watch` extractor writes) therefore differs from the baseline and is delivered at the FIRST tick, not absorbed. `follow` before any completed `readText` throws (there is no shown content to follow).
   - **Visibility**: polling pauses while `document.visibilityState === 'hidden'` and re-checks immediately on becoming visible (adapter layer may touch `document`; the arch test restricts it only in pure layers).
   - **Transient failures** (e.g. `NotFoundError` during an editor's delete-then-create save, intermittent I/O): tolerated up to 5 consecutive ticks, then `onEnded('…')`. A success resets the counter.
   - **Permanent failures**: `NotAllowedError` is confirmed before ending. The adapter queries the handle's read permission; only a non-granted answer ends following with `onEnded` (a `prompt` answer also ends it — re-prompting without a user gesture is impossible and forbidden by requirement 5). A still-granted answer means the error was a misclassified transient (e.g. a replace-window collision reported as `NotAllowedError` by some builds) and it counts against the transient budget instead. If the permission query itself is unavailable or throws, the transient budget applies — a real revocation then ends within 5 ticks anyway.
   - **Stop**: the returned function cancels the timer and listeners idempotently; `onChange`/`onEnded` are never invoked after stop returns.
 
-Oversized content (over `maxBytes`) counts as an invalid read: it is reported through the same non-blocking path and never delivered as a reload.
+**Oversized content (premortem A2-F2, pinned)**: the size gate runs on `File` metadata BEFORE any content read - content over `maxBytes` is never read at all, not truncated. Over the cap: `onSkipped(reason)` fires ONCE and the baseline advances on metadata `(lastModified, size)` (no text recorded), so the same oversized bytes never re-read, re-warn, or re-render at tick rate; a legitimately growing dataset costs one warning per extractor write, not one per second. Oversized never counts against the transient budget and never ends the follow: a later change back under the cap is delivered normally. (The text-dedupe layer is skipped while over the cap - metadata is the only identity available without reading.)
 
 ## App and UI wiring (minimal)
 
@@ -105,11 +118,11 @@ Oversized content (over `maxBytes`) counts as an invalid read: it is reported th
 
 - After a successful `readTemporarySource` from a source with `follow`, start following. Keep `stopFollow` and the source; capture the session epoch.
 - **Fencing**: every `onChange`/`onEnded` callback first checks the captured session epoch and `project === null && previewReturn === null`. Stale → self-stop, discard. Additionally, every path that installs a different session (`loadTemporaryLoaded`, `commitProjectCandidate`, `beginProjectPreview`) explicitly stops the active follow, so the timer dies promptly rather than merely being fenced.
-- **Reload**: on a current `onChange`, call `controller.refreshText(text)` inside try/catch. `refresh` → `importDoc` is the single validation path; layout, search and filters carry over (existing `Refresh` command semantics); the loss banner appears. Set the message to `Reloaded <name> from disk (<HH:MM:SS>).` and notify.
-- **Busy overlap**: if `lifecycleBusy` when a change arrives, park the latest text in a single pending slot and apply it when the operation settles (last-writer-wins, applied only if the session is still current). A reload is never dropped and never interleaves with a foreground lifecycle operation.
+- **Reload**: on a current `onChange`, call `controller.refreshText(text)` inside try/catch. `refresh` → `importDoc` is the single validation path; layout, search, filters AND the selection carry over - the `Refresh` command in `app/state.ts` is amended to keep `selection.nodeIds` restricted to surviving ids and `selection.edgeId` when the edge still exists (premortem A2-F4: under auto-reload, extractor churn must not clear what the user is inspecting; role interface: selection is preserved across model transitions). The loss banner appears. Set the message to `Reloaded <name> from disk (<HH:MM:SS>).`; when the reload flips the document's `readOnly` (the new file declares an unsupported requirement, or stops doing so), the message names the flip explicitly instead of hiding it behind the generic text (premortem A2-F8). Notify.
+- **Busy overlap**: if `lifecycleBusy` when a follow event arrives, park it in a single pending slot and apply it when the operation settles, only if the session is still current. The slot holds the latest EVENT, not just text: `reload(text)` or `ended(reason)`, with `ended` superseding a parked reload (premortem A2-F5: an `onEnded` during a foreground operation must surface after settle, not be clobbered by the operation's own completion message). A reload is never dropped and never interleaves with a foreground lifecycle operation.
 - **Invalid content**: catch from `refreshText`, keep state untouched, set a non-blocking warning message `Auto-reload skipped: <name> changed on disk but is invalid or mid-write. Keeping the last good state. (<error>)`, keep following. The next successful reload clears it.
 - **Ended**: surface `Stopped following <name>: <reason>. The last good state is kept.` and drop the subscription.
-- **Dirty**: unchanged policy. The dirty flag keeps meaning "the view changed since baseline"; a reload that preserves the user's layout does not force it either way.
+- **Dirty (premortem A2-F3, semantics pinned)**: dirty tracks USER actions only; an auto-reload must not flip it. The naive wiring would: the viewKey subscriber (`projectController.ts:153-163`) marks dirty on any view change outside `loading`, and a reload that drops a positioned/expanded id changes the viewKey. Therefore the reload install runs under the same `loading` guard used by `installLoadedSession` (set `loading`, `refreshText`, resync `lastViewKey`, clear `loading`): a clean session stays clean through any number of auto-reloads, a dirty session stays dirty, and the reload itself never schedules an autosave. Pinned by unit test in both directions.
 - `ProjectControllerState` gains `followingLabel: string | null` (e.g. `Following dataset.json — reloads on change`) so the UI renders follow status without knowing why.
 
 `ui/app.ts`:
@@ -153,7 +166,9 @@ A background tab re-rendering a large graph on every extractor cycle wastes batt
 - P1: every reload is ingested through `importDoc` (via `refresh`); there is no second parse/validation path.
 - P1: a reload never re-prompts for permission and never fires for a session that is no longer current (epoch fence + explicit stop).
 - P1: a reload never interleaves with a running lifecycle operation; the pending slot applies at most the latest text once the operation settles.
-- P2: reload preserves the user's positions/expansion for surviving ids and reports drops (loss banner); search and filters carry over.
+- P2: reload preserves the user's positions/expansion AND selection for surviving ids and reports drops (loss banner); search and filters carry over.
+- P2: an auto-reload never flips `dirty` and never schedules an autosave by itself; dirty reflects user actions only.
+- P2: oversized content produces at most one warning per content change (baseline advances on metadata); it never spins reads at tick rate, never counts as transient failure, and never ends the follow.
 - P2: the UI states that following is active and when a reload happened; warnings are non-blocking.
 - P2: polling stops (not merely idles) when the session changes or following ends; no timer leaks across sessions.
 - P2: a hidden tab does not poll; a refocused tab catches up within one tick.
@@ -163,8 +178,10 @@ A background tab re-rendering a large graph on every extractor cycle wastes batt
 - `VisualSpecs/src/ports/projectStore.ts`
 - `VisualSpecs/src/adapters/filesystem/FsaProjectStore.ts`
 - `VisualSpecs/src/app/projectController.ts`
+- `VisualSpecs/src/app/state.ts` (Refresh carries selection of surviving ids only - premortem A2-F4)
 - `VisualSpecs/src/ui/app.ts`
 - `VisualSpecs/tests/app/projectController.test.ts` (fake followable sources)
+- `VisualSpecs/tests/app/controller.test.ts` (Refresh selection carry-over)
 - `VisualSpecs/tests/smoke/followFile.spec.ts` (new; real adapter over OPFS + stubbed picker, following `projectUi.spec.ts` precedent)
 - `plan/9-follow-file-reload.md` (this file)
 
@@ -189,7 +206,13 @@ Unit (vitest, fake store/source — `tests/app/projectController.test.ts`):
 - delivery during `lifecycleBusy` → applied exactly once after settle; superseded pending text never applied;
 - `onEnded` → message, no further reloads;
 - fallback source without `follow` → no follow attempted, `followingLabel` null;
-- `NotAllowedError` permanence check: with a still-granted permission answer the follow survives and the error counts as transient; with `denied`/`prompt` it ends. (The follow loop is factored over a minimal handle surface so vitest can script this; OPFS cannot fabricate `NotAllowedError`.)
+- `NotAllowedError` permanence check: with a still-granted permission answer the follow survives and the error counts as transient; with `denied`/`prompt` it ends. (The follow loop is factored over a minimal handle surface so vitest can script this; OPFS cannot fabricate `NotAllowedError`.);
+- baseline gap (A2-F1): content changed between the open `readText` and `follow()` start → delivered at the first tick; `follow` with no completed `readText` throws; second `follow` while active throws; `follow` after `stop()` works;
+- oversized (A2-F2): growth over `maxBytes` → exactly one `onSkipped`, no repeat warning on subsequent ticks, no content read; shrink back under the cap → normal delivery; follow never ends from oversized;
+- dirty (A2-F3): reload-with-drops on a CLEAN temporary session → dirty stays false, no autosave scheduled; on a DIRTY session → stays true;
+- selection (A2-F4): Refresh keeps selected surviving node ids and a surviving selected edge; drops vanished ids only;
+- ended-during-busy (A2-F5): `onEnded` while `lifecycleBusy` → after settle, `followingLabel` is null AND the stopped message is the visible one; a parked reload superseded by `ended` is not applied;
+- readOnly flip (A2-F8): reload whose document flips `readOnly` → message names the flip.
 
 Smoke (Playwright, real `FsaProjectStore` — `tests/smoke/followFile.spec.ts`, picker stubbed to return an OPFS file handle as in `projectUi.spec.ts:1778`):
 
@@ -219,6 +242,7 @@ If following misbehaves in the field (e.g. a platform's `lastModified` granulari
 - Multi-tab: two tabs following the same file poll independently and reload independently; there is no cross-tab coordination, and none is claimed.
 - A reload landing mid-drag re-derives the scene under the pointer; the existing `refreshText` path has the same property. Judged P3 UX; if a premortem shows real breakage, deferring reload while a drag is active is a contained follow-up in the same files.
 - `File.lastModified` millisecond granularity plus a 1000 ms poll bounds staleness at ~2 s worst case after the extractor's rename; within the agreed freshness budget.
+- The app-wide single message slot means any LATER user operation can replace a follow warning or stop notice (premortem A2-F5, accepted residual): the message slot is last-event-wins across the whole app by design. The durable, non-clobberable signal is `followingLabel` - it is state, not a message, and disappears exactly when following ends. The busy-overlap case (clobbering by the operation running at event time) IS handled via the pending slot; only genuinely subsequent operations replace the text.
 
 ## Constructive decision record
 
@@ -227,4 +251,5 @@ If following misbehaves in the field (e.g. a platform's `lastModified` granulari
 
 ## Independent premortem record
 
-Pending: semantic red team, resilience red team. Implementation starts only on `READY_FOR_IMPLEMENTATION`.
+- Semantic red team, round 1 (report 20260715-045530): no P0. A2-F1 (P1 conditional), A2-F2, A2-F3 (P2), A2-F4..A2-F8 (P3) - ALL adopted as the amendments marked `premortem A2-Fn` above; the single accepted residual is the later-operation message clobber half of A2-F5 (durable signal: `followingLabel`). The report also certifies as sound: the fencing design against the real `sessionEpoch` machinery, the structural P0 (refresh throws before any mutation), and the last-writer-wins slot's loss-report semantics.
+- Resilience red team: pending. Implementation starts only on `READY_FOR_IMPLEMENTATION`.
