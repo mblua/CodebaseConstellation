@@ -247,6 +247,7 @@ If following misbehaves in the field (e.g. a platform's `lastModified` granulari
 ## Constructive decision record
 
 - vs-spec-core-lead: `APPROVED` from the core interface, round 1, no changes required (msg 20260715-043909).
+- vs-spec-core-lead: A2-F4 scope expansion (`src/app/state.ts` Refresh selection carry + `tests/app/controller.test.ts`) APPROVED, msg 20260715-050529; decision recorded as the artifact owner's.
 - vs-extraction-evidence-dev: `APPROVED` from the extraction interface, round 1, no contract change (fwd in msg 20260715-044008). One non-blocking finding — `NotAllowedError` misclassification could kill a healthy follow — adopted as the round-1 amendment above (permanence check before `onEnded`) rather than recorded as accepted risk: the check is one bounded permission query on an already-failing tick, and it removes an entire false-ended class.
 
 ## Independent premortem record
