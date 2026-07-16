@@ -253,3 +253,85 @@ describe('destroy', () => {
     expect(renderer.destroyCount).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('refresh carries the selection for surviving ids (A2-F4)', () => {
+  it('keeps selected surviving nodes and drops vanished ids only', () => {
+    const { renderer, controller } = boot();
+    renderer.emit({ type: 'node:click', id: 'pkg-a', additive: false });
+    renderer.emit({ type: 'node:click', id: 'pkg-b', additive: true });
+    expect(controller.state.selection.nodeIds).toEqual(['pkg-a', 'pkg-b']);
+
+    // pkg-b and its subtree vanish in the new document.
+    const next = JSON.parse(sampleDoc()) as {
+      nodes: { id: string }[];
+      edges: { targetId: string }[];
+    };
+    next.nodes = next.nodes.filter((n) => !['pkg-b', 'dir-b', 'file-b1'].includes(n.id));
+    next.edges = next.edges.filter((e) => e.targetId !== 'file-b1');
+    controller.refreshText(JSON.stringify(next));
+
+    expect(controller.state.selection.nodeIds).toEqual(['pkg-a']);
+  });
+
+  it('keeps a surviving selected aggregated edge and it resolves against the NEW projection', () => {
+    const { renderer, controller } = boot();
+    const aggregate = controller.derived.graph.visibleEdges.find(
+      (e) => e.kind === 'imports' && e.count === 2,
+    );
+    expect(aggregate).toBeDefined();
+    renderer.emit({ type: 'edge:click', id: aggregate?.id ?? '' });
+    expect(controller.state.selection.edgeId).toBe(aggregate?.id);
+
+    controller.refreshText(sampleDoc());
+
+    expect(controller.state.selection.edgeId).toBe(aggregate?.id);
+    expect(
+      controller.derived.graph.visibleEdgeById.get(controller.state.selection.edgeId as never),
+    ).toBeDefined();
+  });
+
+  it('clears a selected edge whose underlying relations vanished', () => {
+    const { renderer, controller } = boot();
+    const aggregate = controller.derived.graph.visibleEdges.find(
+      (e) => e.kind === 'imports' && e.count === 2,
+    );
+    renderer.emit({ type: 'edge:click', id: aggregate?.id ?? '' });
+    expect(controller.state.selection.edgeId).toBe(aggregate?.id);
+
+    const next = JSON.parse(sampleDoc()) as { edges: { kind: string }[] };
+    next.edges = next.edges.filter((e) => e.kind !== 'imports');
+    controller.refreshText(JSON.stringify(next));
+
+    expect(controller.state.selection.edgeId).toBeNull();
+  });
+});
+
+describe('dispatch atomicity under a throwing install (resilience A2-P3 hardening)', () => {
+  it('a Refresh whose apply throws leaves state AND derived exactly as they were', () => {
+    // The scriptable half of the class: `apply` (which runs stateFromLoaded for
+    // Refresh) throwing must not tear the controller. A poisoned model makes the
+    // install throw at first touch. The derive-AFTER-apply half needs an
+    // injection seam in controller.ts (outside this artifact's files) and is
+    // escalated per the plan, not silently approximated.
+    const { controller } = boot();
+    const before = controller.state;
+    const beforeDerived = controller.derived;
+
+    const loaded = importDoc(sampleDoc());
+    const poisonedModel = new Proxy(loaded.model, {
+      get() {
+        throw new Error('poisoned model');
+      },
+    });
+    expect(() =>
+      controller.dispatch({
+        type: 'Refresh',
+        loaded: { ...loaded, model: poisonedModel as never },
+        loss: { droppedPositions: [], droppedExpanded: [], newNodes: [], reparented: [] },
+      }),
+    ).toThrow('poisoned model');
+
+    expect(controller.state).toBe(before);
+    expect(controller.derived).toBe(beforeDerived);
+  });
+});

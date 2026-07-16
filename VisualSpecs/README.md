@@ -386,6 +386,43 @@ npm run extract -- --repo <path> --out data/<name>.json [--hierarchy logical|phy
                    [--tsconfig <path>] [--snippets] [--stamp]
 ```
 
+### Watch mode
+
+```powershell
+npm run extract -- --watch --repo <path> --out data/<name>.json        # one repo
+npm run extract -- --watch --config .local/extract-watch.json          # many repos
+npm run extract:watch                                                  # = the line above
+```
+
+`--watch` keeps the CLI alive and re-extracts a repo when its working tree changes.
+The config file maps several repos at once — entries mirror the flags exactly, and
+produce **the same `generator.flags` and `configDigest`** as the equivalent command
+line (pinned by test):
+
+```json
+{ "repos": [
+    { "repo": "../../repo-AgentsCommander", "name": "AgentsCommander", "out": "data/agentscommander.json" }
+] }
+```
+
+What it promises (plan/9-extract-watch.md is the full spec):
+
+* **Atomic output** — every write goes to a uniquely named temp file in the same
+  directory, then `rename`. A concurrent reader sees the old complete document or
+  the new one, **never a torn JSON**. One-shot runs write atomically too.
+* **Only real changes republish** — detection is a git-aware fingerprint
+  (`ls-files` + `rev-parse` + `status --porcelain` + an lstat of the dirty set),
+  debounced per repo; byte-identical output is not rewritten (watch mode only —
+  a one-shot run always writes, so its mtime keeps marking "a run happened").
+* **Errors do not kill the watcher** — a failing extraction is reported on stderr
+  (machine-readable JSON) and retried when the repo next changes; a failed write
+  retries every tick with the already-extracted text.
+* `--interval <ms>` (default 1000, min 100) is a floor, not a promised cadence:
+  ticks never overlap, so the real cadence is max(interval, tick duration).
+* An `out` may not land inside a watched repo unless it is git-ignored there
+  (exit 10) — otherwise the watcher would feed on its own output. `.local/` is
+  gitignored, which is why the config lives there.
+
 * **Files** — `git ls-files -z`, NUL-separated, invoked with an **argument array** (never a
   shell string). Before any file is read, its real path is asserted to be inside the repo:
   the extractor must not be a repo-escape primitive.

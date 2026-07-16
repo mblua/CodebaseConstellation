@@ -1,0 +1,492 @@
+// The watch loop (plan/9-extract-watch.md §Detection, §Debounce, §Error containment).
+//
+// The core extractor stays one-shot and pure; this module orchestrates it as an
+// injected function. Everything with a decision in it — the fingerprint, the
+// porcelain parser, the per-repo debounce state machine — is exported for direct
+// unit testing; the loop itself is a thin shell over `schedule`.
+//
+// Detection is the HYBRID fingerprint: three git spawns (`ls-files`, `rev-parse`,
+// `status --porcelain`) plus an lstat of ONLY the dirty set. git's own C-speed stat
+// scan covers the clean files; the explicit lstat covers the second edit to an
+// already-dirty file (the porcelain-killer), because that file is in the set and
+// its mtime is observed directly. A `touch` of a clean file is deliberately NOT
+// detected: the extractor reads content and never mtimes, so a touch cannot change
+// the document — that detection was a false positive costing a discarded extraction.
+
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { lstatSync } from 'node:fs';
+import { isAbsolute, join, resolve, sep } from 'node:path';
+import type { ExtractOptions, ExtractResult } from './extract.ts';
+import type { WatchTarget } from './watchconfig.ts';
+
+/** Forced extraction after K consecutive unstable ticks (A1-F7). */
+export const FORCED_EXTRACT_TICKS = 5;
+/** One-time warning after this many consecutive unavailable ticks (A1-P2-3). */
+export const UNAVAILABLE_WARN_TICKS = 30;
+/** One-time warning after this many marker-deferred forced extractions (final pass 5). */
+export const DEFERRED_WARN_TICKS = 30;
+/** Write-retry log throttle: first failure, then every Nth (pre-verification 4.b). */
+export const WRITE_RETRY_LOG_EVERY = 30;
+
+// ── git plumbing ─────────────────────────────────────────────────────────────
+
+function git(root: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    return null; // unavailability is a STATE for the watcher, not an error contract
+  }
+}
+
+/**
+ * The repo's real git directory, resolved ONCE at startup and cached by the caller
+ * (final pass 2): in a linked worktree `.git` is a file and the operation markers
+ * live under `<main>/.git/worktrees/<name>/` — a hardcoded `<root>/.git/` would
+ * ENOENT forever and leave the marker deferral silently inert.
+ */
+export function resolveGitDir(root: string): string | null {
+  const out = git(root, ['rev-parse', '--git-dir']);
+  if (out === null) return null;
+  const dir = out.trim();
+  if (dir === '') return null;
+  return isAbsolute(dir) ? dir : resolve(root, dir);
+}
+
+const OPERATION_MARKERS = [
+  'rebase-merge',
+  'rebase-apply',
+  'MERGE_HEAD',
+  'CHERRY_PICK_HEAD',
+  'BISECT_LOG',
+] as const;
+
+/** The marker of an in-progress git operation, or null. One lstat each, no spawn. */
+export function operationInProgress(gitDir: string): string | null {
+  for (const marker of OPERATION_MARKERS) {
+    try {
+      lstatSync(join(gitDir, marker));
+      return marker;
+    } catch {
+      // absent: keep looking
+    }
+  }
+  return null;
+}
+
+/**
+ * Porcelain v1 `-z` parsing, hardened (final pass 3): entries are NUL-separated
+ * `XY <path>`, and a rename/copy (`R`/`C` in either column) carries a SECOND
+ * NUL-separated field — the origin path — which must be consumed, not read as an
+ * entry. Returns the current paths (POSIX separators).
+ */
+export function parsePorcelainZ(z: string): string[] {
+  const tokens = z.split('\0');
+  const paths: string[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const entry = tokens[i] as string;
+    if (entry.length < 4) continue;
+    const x = entry[0] as string;
+    const y = entry[1] as string;
+    const path = entry.slice(3).split(sep).join('/');
+    if (path !== '') paths.push(path);
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') i += 1; // skip the origin field
+  }
+  return paths;
+}
+
+/**
+ * The hybrid fingerprint. `null` means "unavailable this tick" (e.g. `.git/index.lock`
+ * mid-rebase) — retried next tick, never a crash. A repo with no commits is still
+ * watchable: `rev-parse HEAD` failing alone does not make the tick unavailable,
+ * matching `readRepo`'s treatment of unborn branches.
+ */
+export function fingerprintRepo(root: string): string | null {
+  const lsFiles = git(root, ['ls-files', '-z']);
+  if (lsFiles === null) return null;
+  const status = git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=no']);
+  if (status === null) return null;
+  const head = git(root, ['rev-parse', 'HEAD'])?.trim() ?? '';
+
+  const tuples: string[] = [];
+  for (const path of parsePorcelainZ(status)) {
+    try {
+      const stat = lstatSync(join(root, path));
+      tuples.push(`${path}\0${String(stat.size)}\0${String(stat.mtimeMs)}`);
+    } catch {
+      // A deleted-but-unstaged file, a rename artifact: absence is represented as
+      // absence — no tuple — while the porcelain text already carries the state.
+    }
+  }
+  tuples.sort();
+
+  return createHash('sha256')
+    .update(lsFiles)
+    .update('\u0001')
+    .update(head)
+    .update('\u0001')
+    .update(status)
+    .update('\u0001')
+    .update(tuples.join('\u0001'))
+    .digest('hex');
+}
+
+// ── per-repo debounce state machine (pure) ───────────────────────────────────
+
+export interface RepoState {
+  /** Fingerprint whose extraction was last PUBLISHED (or skip-identical'd). */
+  lastExtracted: string | null;
+  /** Fingerprint seen on the previous tick — the stability comparand. */
+  lastSeen: string | null;
+  /** Consecutive ticks with a moving fingerprint (feeds forced-K). */
+  unstableTicks: number;
+  /** Fingerprint of a deterministic extract-failure: not retried until it moves. */
+  attempted: string | null;
+  /** A successful extraction whose atomic publish failed: retried per tick. */
+  pending: { fingerprint: string; text: string; retries: number } | null;
+  unavailableTicks: number;
+  unavailableWarned: boolean;
+  deferredTicks: number;
+  deferredWarned: boolean;
+}
+
+export function initialRepoState(): RepoState {
+  return {
+    lastExtracted: null,
+    lastSeen: null,
+    unstableTicks: 0,
+    attempted: null,
+    pending: null,
+    unavailableTicks: 0,
+    unavailableWarned: false,
+    deferredTicks: 0,
+    deferredWarned: false,
+  };
+}
+
+export type TickNote =
+  | 'unavailable-warn'
+  | 'unavailable-recovered'
+  | 'deferred-warn'
+  | 'deferred-resumed';
+
+export interface TickDecision {
+  state: RepoState;
+  action:
+    | { kind: 'none' }
+    | { kind: 'extract'; fingerprint: string; forced: boolean }
+    | { kind: 'retry-write' };
+  notes: TickNote[];
+}
+
+/** One tick of the per-repo state machine. Pure: returns the next state. */
+export function tickRepo(
+  previous: RepoState,
+  fingerprint: string | null,
+  opMarker: string | null,
+): TickDecision {
+  const state: RepoState = { ...previous };
+  const notes: TickNote[] = [];
+
+  if (fingerprint === null) {
+    state.unavailableTicks += 1;
+    if (state.unavailableTicks === UNAVAILABLE_WARN_TICKS && !state.unavailableWarned) {
+      state.unavailableWarned = true;
+      notes.push('unavailable-warn');
+    }
+    return {
+      state,
+      action: state.pending === null ? { kind: 'none' } : { kind: 'retry-write' },
+      notes,
+    };
+  }
+
+  if (state.unavailableWarned) notes.push('unavailable-recovered');
+  state.unavailableTicks = 0;
+  state.unavailableWarned = false;
+
+  const retryOrNothing = (): TickDecision => ({
+    state,
+    action: state.pending === null ? { kind: 'none' } : { kind: 'retry-write' },
+    notes,
+  });
+
+  // A known state — already published, or a parked deterministic failure.
+  if (fingerprint === state.lastExtracted || fingerprint === state.attempted) {
+    state.lastSeen = fingerprint;
+    state.unstableTicks = 0;
+    state.deferredTicks = 0;
+    return retryOrNothing();
+  }
+
+  // A pending write for exactly this state: the extraction already succeeded, so
+  // the WRITE alone is retried — never a wasteful re-extraction (A1-F4).
+  if (state.pending !== null && fingerprint === state.pending.fingerprint) {
+    state.lastSeen = fingerprint;
+    state.unstableTicks = 0;
+    state.deferredTicks = 0;
+    return { state, action: { kind: 'retry-write' }, notes };
+  }
+
+  // Stable across two consecutive ticks → the debounce is satisfied.
+  if (fingerprint === state.lastSeen) {
+    state.unstableTicks = 0;
+    state.deferredTicks = 0;
+    if (state.deferredWarned) {
+      state.deferredWarned = false;
+      notes.push('deferred-resumed');
+    }
+    return { state, action: { kind: 'extract', fingerprint, forced: false }, notes };
+  }
+
+  // Still moving.
+  state.lastSeen = fingerprint;
+  state.unstableTicks += 1;
+  if (state.unstableTicks < FORCED_EXTRACT_TICKS) return retryOrNothing();
+
+  // Forced-K: bounded staleness under continuous churn — but never deliberately
+  // publish a tree git itself marks as mid-operation (rebase/merge/…).
+  if (opMarker !== null) {
+    state.deferredTicks += 1;
+    if (state.deferredTicks === DEFERRED_WARN_TICKS && !state.deferredWarned) {
+      state.deferredWarned = true;
+      notes.push('deferred-warn');
+    }
+    return retryOrNothing();
+  }
+
+  state.unstableTicks = 0;
+  state.deferredTicks = 0;
+  if (state.deferredWarned) {
+    state.deferredWarned = false;
+    notes.push('deferred-resumed');
+  }
+  return { state, action: { kind: 'extract', fingerprint, forced: true }, notes };
+}
+
+// After-effects: applied by the loop once the impure work resolved.
+
+export function afterExtractSuccess(state: RepoState, fingerprint: string): RepoState {
+  return {
+    ...state,
+    lastExtracted: fingerprint,
+    lastSeen: fingerprint,
+    attempted: null,
+    pending: null,
+    unstableTicks: 0,
+    deferredTicks: 0,
+  };
+}
+
+export function afterExtractFailure(state: RepoState, fingerprint: string): RepoState {
+  // Parked: the same broken state is not re-extracted every tick. A previously
+  // pending GOOD text (write-failure) survives — it is still the freshest
+  // publishable content.
+  return { ...state, attempted: fingerprint, lastSeen: fingerprint, unstableTicks: 0 };
+}
+
+export function afterWriteFailure(state: RepoState, fingerprint: string, text: string): RepoState {
+  const retries =
+    state.pending !== null && state.pending.fingerprint === fingerprint
+      ? state.pending.retries + 1
+      : 0;
+  return { ...state, pending: { fingerprint, text, retries }, lastSeen: fingerprint };
+}
+
+export function afterWriteRetrySuccess(state: RepoState): RepoState {
+  if (state.pending === null) return state;
+  return {
+    ...state,
+    lastExtracted: state.pending.fingerprint,
+    pending: null,
+    unstableTicks: 0,
+    deferredTicks: 0,
+  };
+}
+
+/** Should THIS retry failure be logged? First failure, then every Nth. */
+export function shouldLogRetry(retries: number): boolean {
+  return retries === 0 || retries % WRITE_RETRY_LOG_EVERY === 0;
+}
+
+// ── the loop ─────────────────────────────────────────────────────────────────
+
+export interface CycleTiming {
+  extractMs: number;
+  writeMs: number;
+}
+
+export interface WatchIo {
+  fingerprint(root: string): string | null;
+  /** Marker lookup; the git dir behind it is resolved once and cached. */
+  opMarker(root: string): string | null;
+  extract(options: ExtractOptions): ExtractResult;
+  /** Atomic, compare-on-disk publication. Throws on exhausted rename retries. */
+  publish(target: WatchTarget, text: string): { written: boolean };
+  onExtracted(
+    target: WatchTarget,
+    result: ExtractResult,
+    timing: CycleTiming,
+    written: boolean,
+    startup: boolean,
+  ): void;
+  onError(target: WatchTarget, error: unknown, phase: 'extract' | 'write'): void;
+  info(line: string): void;
+  now(): number;
+  schedule(fn: () => void, ms: number): { cancel(): void };
+}
+
+export interface Watcher {
+  /** Startup pass (every target once, serially, in entry order), then ticking. */
+  start(): void;
+  stop(): void;
+  /** One synchronous tick over all targets; exposed for integration tests. */
+  tickOnce(): void;
+}
+
+interface TargetRuntime {
+  target: WatchTarget;
+  root: string;
+  state: RepoState;
+}
+
+export function createWatcher(
+  targets: readonly WatchTarget[],
+  intervalMs: number,
+  cwd: string,
+  io: WatchIo,
+): Watcher {
+  const runtimes: TargetRuntime[] = targets.map((target) => ({
+    target,
+    root: isAbsolute(target.options.repo) ? target.options.repo : resolve(cwd, target.options.repo),
+    state: initialRepoState(),
+  }));
+
+  let timer: { cancel(): void } | null = null;
+  let stopped = false;
+  let stretched = false; // one log line per stretch EPISODE, not per tick
+
+  const runCycle = (rt: TargetRuntime, fingerprint: string, startup: boolean): void => {
+    let result: ExtractResult;
+    const extractStart = io.now();
+    try {
+      result = io.extract(rt.target.options);
+    } catch (err) {
+      rt.state = afterExtractFailure(rt.state, fingerprint);
+      io.onError(rt.target, err, 'extract');
+      return;
+    }
+    const extractMs = io.now() - extractStart;
+
+    const writeStart = io.now();
+    try {
+      const { written } = io.publish(rt.target, result.text);
+      rt.state = afterExtractSuccess(rt.state, fingerprint);
+      io.onExtracted(rt.target, result, { extractMs, writeMs: io.now() - writeStart }, written, startup);
+    } catch (err) {
+      rt.state = afterWriteFailure(rt.state, fingerprint, result.text);
+      io.onError(rt.target, err, 'write'); // first failure: always logged
+    }
+  };
+
+  const retryWrite = (rt: TargetRuntime): void => {
+    const pending = rt.state.pending;
+    if (pending === null) return;
+    const writeStart = io.now();
+    try {
+      const { written } = io.publish(rt.target, pending.text);
+      rt.state = afterWriteRetrySuccess(rt.state);
+      io.info(
+        `${rt.target.label}: pending output published after ${String(pending.retries + 1)} retr${pending.retries === 0 ? 'y' : 'ies'} (write ${String(io.now() - writeStart)} ms${written ? '' : ', unchanged'})`,
+      );
+    } catch (err) {
+      rt.state = afterWriteFailure(rt.state, pending.fingerprint, pending.text);
+      if (shouldLogRetry(pending.retries + 1)) io.onError(rt.target, err, 'write');
+    }
+  };
+
+  const emitNotes = (rt: TargetRuntime, notes: readonly TickNote[]): void => {
+    for (const note of notes) {
+      if (note === 'unavailable-warn') {
+        io.info(
+          `warning: ${rt.target.label}: fingerprint unavailable for ${String(UNAVAILABLE_WARN_TICKS)} consecutive ticks — is the repository still there? Retrying every tick.`,
+        );
+      } else if (note === 'unavailable-recovered') {
+        io.info(`${rt.target.label}: fingerprint available again.`);
+      } else if (note === 'deferred-warn') {
+        io.info(
+          `warning: ${rt.target.label}: forced extraction deferred for ${String(DEFERRED_WARN_TICKS)} ticks by an in-progress git operation marker.`,
+        );
+      } else {
+        io.info(`${rt.target.label}: git operation finished; extraction resumed.`);
+      }
+    }
+  };
+
+  const tickOnce = (): void => {
+    for (const rt of runtimes) {
+      if (stopped) return;
+      const fingerprint = io.fingerprint(rt.root);
+      const marker = fingerprint === null ? null : io.opMarker(rt.root);
+      const { state, action, notes } = tickRepo(rt.state, fingerprint, marker);
+      rt.state = state;
+      emitNotes(rt, notes);
+      if (action.kind === 'extract') runCycle(rt, action.fingerprint, false);
+      else if (action.kind === 'retry-write') retryWrite(rt);
+    }
+  };
+
+  const loop = (): void => {
+    if (stopped) return;
+    const tickStart = io.now();
+    tickOnce();
+    const tickMs = io.now() - tickStart;
+    if (tickMs > intervalMs && !stretched) {
+      stretched = true;
+      io.info(
+        `tick took ${String(tickMs)} ms — longer than --interval ${String(intervalMs)} ms; cadence stretches to the tick duration until it recovers.`,
+      );
+    } else if (tickMs <= intervalMs && stretched) {
+      stretched = false;
+    }
+    // Effective cadence = max(interval, tick duration): armed only AFTER the tick,
+    // never setInterval, so ticks cannot overlap or queue (A1-P1-1).
+    timer = io.schedule(loop, Math.max(0, intervalMs - tickMs));
+  };
+
+  return {
+    start(): void {
+      // Startup pass (A1-P2-1): every target once, serially, in entry order, before
+      // the first tick. Failures are contained per target (final pass 1).
+      for (const rt of runtimes) {
+        if (stopped) return;
+        const fingerprint = io.fingerprint(rt.root);
+        if (fingerprint === null) {
+          // Cannot fingerprint at startup: extract anyway? No — without a baseline
+          // fingerprint the state machine has nothing to anchor; report and let the
+          // loop keep trying (the unavailability counter will speak up).
+          io.onError(
+            rt.target,
+            new Error(`cannot fingerprint ${rt.root} at startup (git unavailable?)`),
+            'extract',
+          );
+          continue;
+        }
+        runCycle(rt, fingerprint, true);
+      }
+      timer = io.schedule(loop, intervalMs);
+    },
+    stop(): void {
+      stopped = true;
+      timer?.cancel();
+      timer = null;
+    },
+    tickOnce,
+  };
+}

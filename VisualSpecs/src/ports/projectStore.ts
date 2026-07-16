@@ -34,10 +34,48 @@ export interface ProjectHead {
   currentText: string;
 }
 
+/** One delivered re-read of a followed source. */
+export interface FollowedRead {
+  text: string;
+  /** File modification time, ms since epoch, for display only. */
+  modifiedAt: number;
+}
+
+export interface FollowOptions {
+  /** Bound for each delivery; content over the bound is skipped, never truncated. */
+  maxBytes: number;
+  /** Fresh content after each detected change. Never called with unchanged text. */
+  onChange(read: FollowedRead): void;
+  /**
+   * A changed file could not be delivered (e.g. over maxBytes). The baseline
+   * advances and following continues: at most ONE onSkipped per content change,
+   * never a repeat for the same bytes.
+   */
+  onSkipped(reason: string): void;
+  /** Following stopped permanently (permission revoked, file gone, repeated failures). */
+  onEnded(reason: string): void;
+}
+
 export interface PickedTextSource {
   sourceName: string;
+  /**
+   * Size AT PICK TIME. `readText` re-checks the fresh size against its own bound;
+   * callers pre-checking this value may spuriously reject a file that shrank —
+   * accepted, the fresh check governs.
+   */
   sizeBytes: number;
   readText(maxBytes: number): Promise<string>;
+  /**
+   * Present only when the source can be re-read without re-prompting.
+   * Starts change detection; returns an idempotent stop function.
+   * Contract: requires at least one completed `readText` first (throws
+   * otherwise — the baseline is the last completed read); a second call while
+   * one follow is active throws; calling again after `stop()` is allowed.
+   * Once a follow is active its baseline is owned by the poll loop: a
+   * concurrently completed `readText` is recorded only for a FUTURE `follow()`.
+   * Absent on snapshot-only sources (input-element fallback, insecure contexts).
+   */
+  follow?(options: FollowOptions): () => void;
 }
 
 export interface CommitCurrentPlan {

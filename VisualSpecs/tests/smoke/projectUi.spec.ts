@@ -171,13 +171,17 @@ test('project UI covers Create/Open/Enable editing/name/Rename/Add/Import/Export
     await expect.poll(() => harnessValue<number>(page, 'directoryCalls')).toBe(callsBeforeDecline);
     await expect(name).toHaveValue('Renamed Project');
 
+    // Pinned order (A2-P2-6): the picker runs FIRST on the click's activation;
+    // the discard confirm arrives after an await, so it is polled, not read.
+    const openCallsBeforeTemporary = await harnessValue<number>(page, 'openCalls');
     let temporaryConfirm = '';
     page.once('dialog', (dialog) => {
       temporaryConfirm = dialog.message();
       void dialog.dismiss();
     });
     await page.getByRole('button', { name: 'Open JSON temporarily', exact: true }).click();
-    expect(temporaryConfirm).toMatch(/unsaved layout or view changes/i);
+    await expect.poll(() => temporaryConfirm).toMatch(/unsaved layout or view changes/i);
+    expect(await harnessValue<number>(page, 'openCalls')).toBe(openCallsBeforeTemporary + 1);
     expect(temporaryConfirm.match(/open project/giu)).toHaveLength(1);
     expect(temporaryConfirm.match(/unsaved/giu)).toHaveLength(1);
     expect(temporaryConfirm).not.toContain('Preview');
