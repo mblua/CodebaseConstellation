@@ -92,6 +92,73 @@ The committed `data/agentscommander.json` was extracted from a clean checkout, s
 `source.dirty` is absent and `stats.modifiedTrackedFiles` is empty. Mapping work in progress
 is still supported; in that case the document and banner state it explicitly.
 
+### Mapping another repository
+
+`data/agentscommander.json` is the bundled example. To map any other repository, run the
+extractor against it and write the document where Visual Specs can open it:
+
+```powershell
+npm run extract -- --repo <path-to-repo> --name <DisplayName> --out .local/<name>.json
+```
+
+`--out` must stay **inside `VisualSpecs/`** — the extractor is not a repo-escape primitive
+(see *Path confinement*). `.local/` is git-ignored, so a map of your own project never shows
+up as a change to this repository. The result is a normal portable Visual Specs document:
+open it with **Open JSON temporarily** (below). The start-up map is whatever `src/main.ts`
+imports from `data/`; the bundled file is just the default.
+
+Everything under *Regenerating the dataset* still holds: `--repo`/`--out` never enter the
+document, two runs on the same working tree are byte-identical, and a dirty tree is marked
+`source.dirty` with a banner.
+
+### Live reload — generate on save, reload in the browser
+
+This closes the loop *edit code → re-extract → the open map updates itself*, with no manual
+step and no network: freshness comes from your local disk, not from a server. Set up three
+things once:
+
+```powershell
+# terminal 1 — the app
+npm run dev                                                           # http://localhost:5175
+
+# terminal 2 — the watcher: stays alive, re-extracts when the repo changes
+npm run extract -- --watch --repo <path-to-repo> --name <DisplayName> --out .local/<name>.json
+```
+
+Then, **once**, in the page: **Open JSON temporarily** → pick that `.local/<name>.json`. The
+status line shows **Following `<name>.json`**. From now on, each time you save a file in the
+mapped repository the watcher re-extracts and the page revalidates and reloads the new
+document by itself — **keeping the layout, expansion and selection** of the nodes that
+survive, and reporting what was dropped. Invalid or half-written content never replaces the
+last good map: a non-blocking notice appears and following continues.
+
+For several repositories at once, a config file replaces the flags (see *Watch mode* under
+*The extractor*) and one watcher process feeds every `out`:
+
+```powershell
+npm run extract:watch          # = node tools/extractor/cli.ts --watch --config .local/extract-watch.json
+```
+
+The app shows one map at a time and follows the file that is open, so open whichever one you
+want to track.
+
+**Four things that will bite you if you don't know them:**
+
+* The native picker **cannot open `AppData`, `Temp` or other system folders** — Chromium
+  blocks the File System Access API there. Keep the `out` under your normal project tree;
+  `.local/` inside `VisualSpecs/` is fine. The picker hides dot-folders, so paste the full
+  path of `.local\<name>.json` into the dialog's *File name* box to open it.
+* Following needs a **secure context** — `localhost` (the `npm run dev` server) or HTTPS. A
+  plain `http://<lan-ip>` serve has no `crypto.subtle`, so a picked document opens but does
+  not follow.
+* Detection follows git's **tracked set**. A brand-new file you have not `git add`-ed does not
+  trigger a re-extraction, by design — the map is of the tracked tree. Stage it and the loop
+  runs.
+* The bundled `data/agentscommander.json` reloads by a different path: under `npm run dev`,
+  Vite's own hot-reload refreshes the page when that file changes, so a `--watch` writing
+  straight to it needs no picker. That is dev-only; the picker/follow route above also works
+  on a static `build` + `preview`.
+
 ---
 
 ## Reading the map
@@ -126,7 +193,9 @@ is still supported; in that case the document and banner state it explicitly.
 | `/` | jump to the search box |
 
 **Open JSON temporarily** reads a standalone Visual Specs document without project
-persistence. **Export JSON** writes the document back with your layout, expansion and
+persistence, and — in a secure context — **follows it on disk**: when the file is rewritten
+(by the extractor's watch mode, or anything else) the map reloads itself, carrying your
+layout for surviving nodes (see *Live reload*). **Export JSON** writes the document back with your layout, expansion and
 viewport in it. If a project is open readwrite, exports go to `.visual-specs/exports/`;
 otherwise Visual Specs uses `showSaveFilePicker` when available and an ordinary download only
 when it is not; the UI says that `.visual-specs` was not written. Generated import, export and
