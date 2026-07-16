@@ -126,7 +126,7 @@ npm run extract -- --watch --repo <path-to-repo> --name <DisplayName> --out .loc
 ```
 
 Then, **once**, in the page: **Open JSON temporarily** → pick that `.local/<name>.json`. The
-status line shows **Following `<name>.json`**. From now on, each time you save a file in the
+status line shows **Following `<name>.json` — reloads on change**. From now on, each time you save a file in the
 mapped repository the watcher re-extracts and the page revalidates and reloads the new
 document by itself — **keeping the layout, expansion and selection** of the nodes that
 survive, and reporting what was dropped. Invalid or half-written content never replaces the
